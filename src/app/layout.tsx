@@ -1,20 +1,9 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "设计稿 AI 评审工具 | Lumine Design Review",
-  description: "基于 AI 的智能设计稿评审系统，支持驾驶安全性、可用性、无障碍、美观度等多维度分析",
+  title: "HMI Review AI - Smart Review 审查系统",
+  description: "首款专为车载 HMI 打造的 AI 设计评估工具，从美学到人机工程，为您提供专家级的深度分析与多方案对标体验。",
 };
 
 export default function RootLayout({
@@ -23,11 +12,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="zh-CN"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full bg-[#050a14] text-slate-200">
+    <html lang="zh-CN">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+      </head>
+      <body className="min-h-screen w-full bg-[#0a0f18] text-slate-300 font-sans">
         {children}
       </body>
     </html>

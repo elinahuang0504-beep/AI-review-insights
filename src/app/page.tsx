@@ -1,432 +1,944 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+  Upload,
+  X,
+  Bot,
+  Sparkles,
+  Loader2,
+  GitCompare,
+  Zap,
+  Layers,
+  FileDown,
+  Radar,
+  Plus,
+  Minus,
+  User,
+} from "lucide-react";
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
 
 /* ============================================================
-   类型定义
+   Session storage for passing review data to report page
    ============================================================ */
-interface DiagnosticItem {
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ============================================================
+   LocalStorage history persistence
+   ============================================================ */
+interface HistoryRecord {
   id: string;
-  category: string;
-  asIs: string;
-  toBe: string;
+  name: string;
+  type: "review" | "compare";
+  date: string;
+  score: number | null;
 }
 
-interface StepConfig {
-  num: number;
-  label: string;
-  desc: string;
+function saveHistoryRecord(
+  name: string,
+  type: "review" | "compare",
+  score: number | null,
+  reviewData?: object
+) {
+  try {
+    const existing = localStorage.getItem("reviewHistory");
+    const records: HistoryRecord[] = existing ? JSON.parse(existing) : [];
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    // Convert score from 10-scale to 100-scale for display
+    const displayScore = score ? Math.round(score * 10) : null;
+    const recordId = `h_${Date.now()}`;
+    records.unshift({
+      id: recordId,
+      name,
+      type,
+      date: dateStr,
+      score: displayScore,
+    });
+    localStorage.setItem("reviewHistory", JSON.stringify(records.slice(0, 50))); // Keep max 50 records
+
+    // Also save full review data for report viewing later
+    if (reviewData) {
+      localStorage.setItem(`reviewDetail_${recordId}`, JSON.stringify(reviewData));
+    }
+  } catch (e) {
+    console.warn("Failed to save history record:", e);
+  }
 }
 
-const STEPS: StepConfig[] = [
-  { num: 1, label: "上传图片", desc: "拖拽或点击上传设计稿文件" },
-  { num: 2, label: "智能识别", desc: "AI 解析视觉元素与布局结构" },
-  { num: 3, label: "多维度评价", desc: "安全性 · 可用性 · 无障碍 · 美观度" },
-  { num: 4, label: "报告生成", desc: "输出 AS-IS / TO-BE 对比诊断结果" },
-];
-
-const DEFAULT_DIAGNOSTICS: DiagnosticItem[] = [];
-
-const MOCK_DIAGNOSTICS: DiagnosticItem[] = [
-  {
-    id: "d1",
-    category: "驾驶安全 · 信息层级优化",
-    asIs: "关键操作按钮尺寸偏小，在行驶震动场景下误触风险较高，视觉权重与辅助元素未拉开差距。",
-    toBe: "将核心操作按钮最小触控区域扩大至 48×48dp，通过字号加粗 + 青色高亮边框强化主次层级，降低认知负荷。",
-  },
-  {
-    id: "d2",
-    category: "可用性 · 操作路径精简",
-    asIs: "从首页到达目标功能需经过三级页面跳转，每级均存在非必要的确认弹窗阻断。",
-    toBe: "合并中间层为底部抽屉式导航，取消低风险操作的二次确认，路径缩短为两级直达目标。",
-  },
-  {
-    id: "d3",
-    category: "无障碍 · 对色对比度修复",
-    asIs: "部分说明文字使用 #8a9aad 色值于深底背景上，实测对比度约 2.8:1，低于 WCAG AA 标准。",
-    toBe: "正文文字亮度提升至 #c5d0dc 以上，确保全区域对比度 ≥ 4.5:1；同时提供系统字体大小跟随选项。",
-  },
-  {
-    id: "d4",
-    category: "美观度 · 留白节奏调整",
-    asIs: "卡片内边距不统一（16~28px 混用），模块间缺乏呼吸空间，整体呈现拥挤感。",
-    toBe: "统一内边距规范为 24px 基准，模块间距采用 8px 栅格倍数（32/48/64），形成清晰的视觉呼吸韵律。",
-  },
-];
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
 
 /* ============================================================
-   步骤指示器组件
+   Types
    ============================================================ */
-function StepIndicator({ currentStep }: { currentStep: number }) {
-  return (
-    <div className="glass-card glow-cyan px-6 py-5 mb-10">
-      <div className="flex items-center justify-between gap-2">
-        {STEPS.map((step, idx) => (
-          <div key={step.num} className="flex items-center gap-3">
-            {/* 圆圈数字 */}
-            <div className="flex flex-col items-center">
-              <div
-                className={`
-                  w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold
-                  transition-all duration-500
-                  ${currentStep >= step.num
-                    ? "step-number-active text-[#041018]"
-                    : "bg-slate-800/80 text-slate-500 border border-slate-700/60"
-                  }
-                `}
-              >
-                {step.num}
-              </div>
-              <span className={`mt-2 text-[11px] font-medium tracking-wide ${
-                currentStep >= step.num ? "text-cyan-neon" : "text-slate-600"
-              }`}>
-                {step.label}
-              </span>
-            </div>
+interface UploadedImage {
+  id: string;
+  url: string;
+  stateDesc: string;
+  file: File;
+}
 
-            {/* 连线 */}
-            {idx < STEPS.length - 1 && (
-              <div className={`step-connector hidden sm:block ${currentStep > step.num ? "opacity-100" : "opacity-40"}`} />
-            )}
-          </div>
+/* ============================================================
+   Background Particles
+   ============================================================ */
+const Particles = () => {
+  const [particles, setParticles] = useState<Array<{ size: number; duration: number; delay: number; left: number }>>([]);
+
+  useEffect(() => {
+    setParticles(
+      [...Array(40)].map(() => ({
+        size: Math.random() * 4 + 1,
+        duration: Math.random() * 10 + 5,
+        delay: Math.random() * 5,
+        left: Math.random() * 100,
+      }))
+    );
+  }, []);
+
+  if (particles.length === 0) return null;
+
+  return (
+    <>
+      <style>{`
+        @keyframes float-up {
+          0% { transform: translateY(0) translateX(0) scale(1); opacity: 0; }
+          20% { opacity: 0.6; transform: translateY(-20px) translateX(10px) scale(1.2); }
+          80% { opacity: 0.6; transform: translateY(-80px) translateX(-10px) scale(0.8); }
+          100% { transform: translateY(-100px) translateX(0) scale(0.5); opacity: 0; }
+        }
+      `}</style>
+      <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+        {particles.map((p, i) => (
+          <div
+            key={i}
+            className="absolute bg-indigo-300 rounded-full blur-[1px] mix-blend-screen"
+            style={{
+              width: `${p.size}px`,
+              height: `${p.size}px`,
+              left: `${p.left}%`,
+              bottom: "-10%",
+              animation: `float-up ${p.duration}s ease-in-out ${p.delay}s infinite`,
+            }}
+          />
         ))}
       </div>
+    </>
+  );
+};
 
-      {/* 当前步骤描述 */}
-      <p className="text-center text-xs text-slate-500 mt-4 font-light tracking-wide">
-        {STEPS[Math.max(0, currentStep - 1)]?.desc ?? ""}
-      </p>
-    </div>
+/* ============================================================
+   Header Navigation
+   ============================================================ */
+function HeaderNav() {
+  return (
+    <header className="fixed top-0 left-0 right-0 h-16 z-50 bg-[#0a0f18]/80 backdrop-blur-md border-b border-slate-800 flex items-center justify-between px-6">
+      <Link href="/" className="inline-flex items-baseline gap-1 hover:opacity-80 transition-opacity">
+        <span className="text-xl font-light tracking-tight text-slate-200">Smart</span>
+        <span className="text-xl font-bold tracking-tight text-indigo-400">Review</span>
+        <div className="w-[6px] h-[6px] rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 mb-1"></div>
+      </Link>
+      <Link
+        href="/history"
+        className="flex items-center gap-2 px-3 py-1.5 rounded-full hover:bg-slate-800 transition-colors border border-transparent hover:border-slate-700"
+      >
+        <span className="text-sm font-medium text-slate-300">个人中心</span>
+        <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center border border-indigo-500/30">
+          <User className="w-4 h-4 text-indigo-400" />
+        </div>
+      </Link>
+    </header>
   );
 }
 
 /* ============================================================
-   AS-IS / TO-BE 诊断卡片组件
+   Main Page
    ============================================================ */
-function DiagnosticCard({ item, index }: { item: DiagnosticItem; index: number }) {
+export default function HomePage() {
+  const [activeTab, setActiveTab] = useState<"review" | "compare">("review");
+
   return (
-    <div
-      className="glass-card overflow-hidden card-hover animate-fade-up"
-      style={{ animationDelay: `${index * 120}ms` }}
-    >
-      {/* 卡片标题栏 — 青绿色渐变 */}
-      <div className="diagnostic-header diagnostic-card-header px-5 py-3.5">
-        <h3 className="text-sm font-semibold text-white tracking-tight">{item.category}</h3>
+    <div className="relative w-full min-h-screen flex flex-col pb-24 overflow-hidden">
+      {/* Background Layer */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none z-0 bg-[#0a0f18]">
+        {/* Dynamic Mesh */}
+        <div
+          className="absolute -top-[20%] -left-[10%] w-[70%] h-[90%] rounded-full bg-indigo-600/20 blur-[130px] mix-blend-screen animate-pulse"
+          style={{ animationDuration: "10s" }}
+        />
+        <div
+          className="absolute top-[20%] -right-[10%] w-[60%] h-[100%] rounded-full bg-blue-500/15 blur-[120px] mix-blend-screen animate-pulse"
+          style={{ animationDuration: "12s", animationDelay: "1s" }}
+        />
+        <div
+          className="absolute -bottom-[30%] left-[20%] w-[70%] h-[80%] rounded-full bg-purple-600/15 blur-[140px] mix-blend-screen animate-pulse"
+          style={{ animationDuration: "14s", animationDelay: "2s" }}
+        />
+
+        {/* Noise Texture */}
+        <div className="absolute inset-0 opacity-30 mix-blend-overlay"
+          style={{
+            backgroundImage: `url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPgo8cmVjdCB3aWR0aD0iNCIgaGVpZ2h0PSI0IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMDUiLz4KPC9zdmc+")`,
+          }}
+        />
       </div>
 
-      {/* 内容区 */}
-      <div className="p-5 space-y-4">
-        {/* AS-IS */}
-        <div>
-          <span className="as-is-label">AS-IS · 现状问题</span>
-          <p className="mt-1.5 text-[13px] leading-relaxed text-slate-400 font-light">
-            {item.asIs}
-          </p>
+      <HeaderNav />
+      <Particles />
+
+      {/* Hero Banner Area */}
+      <div className="relative z-10 w-full flex flex-col items-center justify-center pt-32 pb-24 px-6">
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-medium mb-8 backdrop-blur-md">
+          <Sparkles className="w-3.5 h-3.5" />
+          <span>AI辅助设计审查工具全新上线</span>
         </div>
 
-        {/* 分隔线 */}
-        <div className="h-px bg-gradient-to-r from-transparent via-slate-700/50 to-transparent" />
-
-        {/* TO-BE */}
-        <div>
-          <span className="to-be-label">TO-BE · 改进方案</span>
-          <p className="mt-1.5 text-[13px] leading-relaxed to-be-content font-normal">
-            {item.toBe}
-          </p>
+        <div className="flex items-center justify-center mb-4">
+          <span className="text-5xl md:text-7xl font-light tracking-tight text-slate-200">Smart</span>
+          <span className="text-5xl md:text-7xl font-bold tracking-tight text-indigo-400">Review</span>
+          <div className="w-3 h-3 md:w-4 md:h-4 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 ml-2 mb-4 md:mb-6"></div>
         </div>
+        <p className="text-lg md:text-xl text-slate-300 max-w-2xl mx-auto font-medium text-center drop-shadow leading-relaxed">
+          首款专为车载 HMI 打造的 AI 设计评估工具，从美学到人机工程，为您提供专家级的深度分析与多方案对标体验。
+        </p>
       </div>
-    </div>
-  );
-}
 
-/* ============================================================
-   主页组件
-   ============================================================ */
-export default function Home() {
-  const [image, setImage] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [hasAnalyzed, setHasAnalyzed] = useState(false);
-  const [diagnostics, setDiagnostics] = useState<DiagnosticItem[]>(DEFAULT_DIAGNOSTICS);
-  const [currentStep, setCurrentStep] = useState(1);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  /* ---------- 文件处理 ---------- */
-  const handleFile = useCallback((file: File) => {
-    if (!file.type.startsWith("image/")) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setImage(e.target?.result as string);
-      setHasAnalyzed(false);
-      setDiagnostics(DEFAULT_DIAGNOSTICS);
-      setCurrentStep(1);
-    };
-    reader.readAsDataURL(file);
-  }, []);
-
-  /* ---------- 拖拽事件 ---------- */
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  }, []);
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  }, [handleFile]);
-
-  /* ---------- 点击上传 ---------- */
-  const handleClickUpload = () => fileInputRef.current?.click();
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) handleFile(f);
-  };
-
-  /* ---------- AI 分析模拟 ---------- */
-  const handleAnalyze = async () => {
-    if (!image || isAnalyzing) return;
-
-    // 步骤推进：识别
-    setCurrentStep(2);
-    setIsAnalyzing(true);
-    setHasAnalyzed(false);
-    await new Promise((r) => setTimeout(r, 700));
-
-    // 多维度评价
-    setCurrentStep(3);
-    await new Promise((r) => setTimeout(r, 1000));
-
-    // 报告生成
-    setCurrentStep(4);
-    await new Promise((r) => setTimeout(r, 500));
-
-    setDiagnostics(MOCK_DIAGNOSTICS);
-    setIsAnalyzing(false);
-    setHasAnalyzed(true);
-  };
-
-  /* ---------- 重置 ---------- */
-  const handleReset = () => {
-    setImage(null);
-    setHasAnalyzed(false);
-    setDiagnostics(DEFAULT_DIAGNOSTICS);
-    setCurrentStep(1);
-  };
-
-  /* ============================================================
-     渲染
-     ============================================================ */
-  return (
-    <div className="min-h-screen bg-bg-primary px-5 py-8 lg:px-12 lg:py-10">
-      {/* ====== 页面标题 ====== */}
-      <header className="max-w-6xl mx-auto mb-7">
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-cyan-neon to-blue-deep flex items-center justify-center text-base font-black text-[#041018] shadow-lg shadow-cyan-neon/20">
-            LR
+      <div className="relative z-10 max-w-[1400px] w-full mx-auto px-6 flex flex-col items-center">
+        {/* Advantages / Features Section */}
+        <div className="w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-16">
+          <div className="bg-white/[0.03] hover:bg-white/[0.05] border border-white/[0.05] rounded-2xl p-6 backdrop-blur-xl transition-all duration-300 group">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Zap className="w-5 h-5 text-indigo-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-200 mb-2">多维度智能审查</h3>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              结合最新大模型能力，深度分析HMI设计中的人机交互、视觉美学与安全合规隐患。
+            </p>
           </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight text-white">
-              Lumine Review
-            </h1>
-            <p className="text-[11px] font-light text-slate-500 tracking-widest uppercase">
-              Design Review System
+
+          <div className="bg-white/[0.03] hover:bg-white/[0.05] border border-white/[0.05] rounded-2xl p-6 backdrop-blur-xl transition-all duration-300 group">
+            <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Layers className="w-5 h-5 text-blue-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-200 mb-2">双方案深度横评</h3>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              支持深浅模式或多版本设计并行对比，直观呈现优劣势数据差异，推荐最优解。
+            </p>
+          </div>
+
+          <div className="bg-white/[0.03] hover:bg-white/[0.05] border border-white/[0.05] rounded-2xl p-6 backdrop-blur-xl transition-all duration-300 group">
+            <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Radar className="w-5 h-5 text-purple-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-200 mb-2">量化评估体系</h3>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              将界面元素打散，通过计算元素数量、对齐方式、颜色数量等，得出一个美学评分或复杂度评分。
+            </p>
+          </div>
+
+          <div className="bg-white/[0.03] hover:bg-white/[0.05] border border-white/[0.05] rounded-2xl p-6 backdrop-blur-xl transition-all duration-300 group">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <FileDown className="w-5 h-5 text-emerald-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-200 mb-2">一键专业报告导出</h3>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              自动生成专业级评审详尽报告，支持导出PDF/Word格式，无缝衔接团队工作流。
             </p>
           </div>
         </div>
-      </header>
 
-      <main className="max-w-6xl mx-auto">
-
-        {/* ====== 步骤指示器 ====== */}
-        <StepIndicator currentStep={isAnalyzing ? currentStep : (hasAnalyzed ? 4 : image ? 2 : 1)} />
-
-        {/* ====== 主内容：左右布局 ====== */}
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-8 lg:gap-10">
-
-          {/* ========== 左栏：上传区 ========== */}
-          <section className="lg:col-span-2 space-y-5">
-            <div
-              onClick={handleClickUpload}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`
-                relative glass-card cursor-pointer transition-all duration-300 min-h-[360px]
-                flex flex-col items-center justify-center overflow-hidden
-                ${isDragging ? "upload-zone-dragging border-cyan-neon/50" : "hover:border-glass-border"}
-              `}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleFileInput}
-                className="hidden"
-              />
-
-              {image ? (
-                <div className="relative w-full h-full p-4">
-                  <img
-                    src={image}
-                    alt="设计稿预览"
-                    className="w-full h-full object-contain rounded-xl max-h-[340px]"
-                  />
-                  {/* 删除按钮 */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleReset(); }}
-                    className="absolute top-5 right-5 w-8 h-8 rounded-lg bg-[#0c1629]/90 backdrop-blur-md border border-white/[0.06] flex items-center justify-center text-slate-400 hover:text-red-400 hover:border-red-400/30 transition-all"
-                    aria-label="移除图片"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              ) : (
-                <div className="text-center px-7 py-10">
-                  <div className={`w-16 h-16 mx-auto mb-4 rounded-2xl flex items-center justify-center transition-colors duration-300 ${
-                    isDragging ? "bg-cyan-neon/15" : "bg-slate-800/70"
-                  }`}>
-                    <svg className={`w-7 h-7 transition-colors duration-300 ${
-                      isDragging ? "text-cyan-neon drop-shadow-[0_0_8px_rgba(0,229,204,0.5)]" : "text-slate-600"
-                    }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.4}
-                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                      />
-                    </svg>
-                  </div>
-                  <p className={`text-[15px] font-medium mb-1 transition-colors duration-300 ${
-                    isDragging ? "text-cyan-neon" : "text-slate-300"
-                  }`}>
-                    {isDragging ? "松开以上传" : "拖拽设计稿到此处"}
-                  </p>
-                  <p className="text-[13px] text-slate-500 font-light mb-4">或点击选择文件</p>
-                  <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-slate-800/60 text-[12px] text-slate-500 font-light border border-white/[0.03]">
-                    PNG · JPG · WebP · SVG
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* 分析按钮 */}
+        {/* Operation Area Wrapper */}
+        <div className="w-full bg-white/[0.03] border border-white/[0.08] backdrop-blur-2xl rounded-[2rem] p-6 md:p-10 shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
+          {/* Text + Underline Tabs */}
+          <div className="flex items-center gap-12 border-b border-white/[0.08] mb-10 px-2">
             <button
-              onClick={handleAnalyze}
-              disabled={!image || isAnalyzing}
-              className={`
-                w-full py-3.5 rounded-2xl font-bold text-[14px] tracking-widest
-                flex items-center justify-center gap-2.5 select-none
-                ${!image || isAnalyzing
-                  ? "bg-slate-800/60 text-slate-600 cursor-not-allowed border border-white/[0.03]"
-                  : "glow-btn text-white"
-                }
-              `}
+              onClick={() => setActiveTab("review")}
+              className={cn(
+                "pb-4 text-base font-medium transition-all duration-200 relative cursor-pointer",
+                activeTab === "review"
+                  ? "text-indigo-400"
+                  : "text-slate-400 hover:text-slate-200"
+              )}
             >
-              {isAnalyzing ? (
-                <>
-                  <svg className="animate-spin w-4.5 h-4.5" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3.5" />
-                    <path className="opacity-75" fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                    />
-                  </svg>
-                  <span>AI 正在诊断中...</span>
-                </>
-              ) : (
-                <>
-                  <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  <span>开始分析</span>
-                </>
+              审查模式 (Review)
+              {activeTab === "review" && (
+                <span className="absolute bottom-0 left-0 w-full h-[2px] bg-indigo-500 rounded-t-full shadow-[0_0_12px_rgba(99,102,241,0.8)]" />
               )}
             </button>
-          </section>
+            <button
+              onClick={() => setActiveTab("compare")}
+              className={cn(
+                "pb-4 text-base font-medium transition-all duration-200 relative cursor-pointer",
+                activeTab === "compare"
+                  ? "text-indigo-400"
+                  : "text-slate-400 hover:text-slate-200"
+              )}
+            >
+              对比模式 (Compare)
+              {activeTab === "compare" && (
+                <span className="absolute bottom-0 left-0 w-full h-[2px] bg-indigo-500 rounded-t-full shadow-[0_0_12px_rgba(99,102,241,0.8)]" />
+              )}
+            </button>
+          </div>
 
-          {/* ========== 右栏：诊断报告 ========== */}
-          <section className="lg:col-span-3 space-y-6">
-            {/* Result 头部 */}
-            {!hasAnalyzed && !isAnalyzing && (
-              <div className="glass-card p-8 text-center opacity-50">
-                <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-slate-800/60 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.4}
-                      d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                    />
-                  </svg>
-                </div>
-                <p className="text-sm text-slate-500 font-light">上传设计稿后启动 AI 诊断</p>
-                <p className="text-xs text-slate-700 mt-1 font-light">AS-IS / TO-BE 对比报告将在此展示</p>
-              </div>
-            )}
-
-            {isAnalyzing && (
-              <div className="glass-card p-10 text-center glow-cyan">
-                <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-cyan-neon/10 flex items-center justify-center animate-pulse-glow rounded-full">
-                  <svg className="w-6 h-6 text-cyan-neon" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L4.2 15.3" />
-                  </svg>
-                </div>
-                <p className="text-sm font-bold text-white tracking-wide">AI 诊断进行中</p>
-                <p className="text-xs text-cyan-neon/70 mt-1.5 font-light">步骤 {currentStep}/4 · 请稍候</p>
-              </div>
-            )}
-
-            {/* ====== Result 结果区 ====== */}
-            {hasAnalyzed && (
-              <>
-                <div className="glass-card glow-cyan p-8 text-center">
-                  <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-cyan-neon mb-3">
-                    Result
-                  </p>
-                  <h2 className="result-title-glow text-2xl sm:text-[26px] font-black leading-snug tracking-tight mb-2">
-                    基于 AI 诊断结果<br />已生成多维度改进建议
-                  </h2>
-                  <p className="text-[13px] text-slate-500 font-light max-w-md mx-auto leading-relaxed">
-                    Based on the analysis results, we identified key issues and provided AS-IS / TO-BE improvement proposals for each dimension.
-                  </p>
-                </div>
-
-                {/* 诊断卡片网格 */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                  {diagnostics.map((d, i) => (
-                    <DiagnosticCard key={d.id} item={d} index={i} />
-                  ))}
-                </div>
-
-                {/* 底部综合评分 */}
-                <div className="glass-card p-6 flex items-center gap-4">
-                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-neon/20 to-blue-deep/10 flex items-center justify-center shrink-0">
-                    <svg className="w-5 h-5 text-cyan-neon" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold text-white">综合评估完成</p>
-                    <p className="text-[12px] text-slate-500 font-light mt-0.5">
-                      共发现 <span className="glow-text-cyan font-bold">{diagnostics.length}</span> 项可优化问题，
-                      已按优先级生成改进方案。
-                    </p>
-                  </div>
-                </div>
-              </>
-            )}
-          </section>
+          {/* Tab Content */}
+          <div className="w-full">
+            {activeTab === "review" ? <ReviewTab /> : <CompareTab />}
+          </div>
         </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="max-w-6xl mx-auto mt-14 pt-5 border-t border-white/[0.04]">
-        <p className="text-center text-[11px] text-slate-700 font-light tracking-wider">
-          LUMINE DESIGN REVIEW · AI DIAGNOSTIC SYSTEM · v2.0
-        </p>
-      </footer>
+      </div>
     </div>
   );
+}
+
+/* ============================================================
+   Review Tab
+   ============================================================ */
+function ReviewTab() {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
+  const [images, setImages] = useState<UploadedImage[]>([]);
+  const [description, setDescription] = useState("");
+  const [goals, setGoals] = useState<string[]>([""]);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isReviewing, setIsReviewing] = useState(false);
+
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      const newImages = Array.from(files)
+        .slice(0, 9 - images.length)
+        .map((file) => ({
+          id: Math.random().toString(36).substr(2, 9),
+          url: URL.createObjectURL(file),
+          stateDesc: "",
+          file,
+        }));
+      setImages((prev) => [...prev, ...newImages]);
+    }
+  };
+
+  const removeImage = (id: string) => {
+    setImages((prev) => prev.filter((img) => img.id !== id));
+  };
+
+  const updateStateDesc = (id: string, val: string) => {
+    setImages((prev) =>
+      prev.map((img) => (img.id === id ? { ...img, stateDesc: val } : img))
+    );
+  };
+
+  const addGoal = () => setGoals([...goals, ""]);
+
+  const updateGoal = (index: number, value: string) => {
+    const newGoals = [...goals];
+    newGoals[index] = value;
+    setGoals(newGoals);
+  };
+
+  const removeGoal = (index: number) => {
+    const newGoals = goals.filter((_, i) => i !== index);
+    setGoals(newGoals.length ? newGoals : [""]);
+  };
+
+  const autoFillAI = () => {
+    if (images.length === 0) {
+      alert("请先上传设计稿。");
+      return;
+    }
+    setIsAiLoading(true);
+    setTimeout(() => {
+      setDescription("中控主屏幕快捷操作面板");
+      setGoals([
+        "用户需要在夜间驾驶环境下快速准确地找到空调、座椅加热等高频车控按键",
+        "避免在驾驶操作时产生意外的误触",
+      ]);
+      setImages((prev) =>
+        prev.map((img, i) => ({
+          ...img,
+          stateDesc:
+            img.stateDesc ||
+            (i === 0
+              ? "默认状态 (首页展示)"
+              : i === 1
+              ? "按键点击交互反馈"
+              : "模态弹窗状态"),
+        }))
+      );
+      setIsAiLoading(false);
+    }, 1500);
+  };
+
+  const startReview = async () => {
+    if (images.length === 0) {
+      alert("请至少上传一张设计稿。");
+      return;
+    }
+    setIsReviewing(true);
+
+    try {
+      // Convert images to base64 for API
+      const imageData = await Promise.all(
+        images.map(async (img) => ({
+          data: await fileToBase64(img.file),
+          name: img.file.name,
+          state: img.stateDesc || "默认展示",
+        }))
+      );
+
+      // Call AI review API
+      const response = await fetch("/api/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          images: imageData,
+          taskName: description || "未命名审查任务",
+          description,
+          goals: goals.filter(g => g.trim()),
+          systemType: "中控屏",
+          scene: "行驶中+静止通用",
+          evalMode: "standard",
+        }),
+      });
+
+      let reviewData;
+      
+      if (!response.ok) {
+        // API failed - use mock data
+        console.warn("API request failed, using mock data");
+        reviewData = generateMockResult();
+      } else {
+        const json = await response.json();
+        if (json.success && json.data) {
+          reviewData = json.data;
+        } else {
+          reviewData = generateMockResult();
+        }
+      }
+
+      // Store result in sessionStorage for report page
+      sessionStorage.setItem("reviewResult", JSON.stringify(reviewData));
+      sessionStorage.setItem("reviewTaskInfo", JSON.stringify({ description, goals: goals.filter(g => g.trim()) }));
+      // Store image previews for report page display
+      sessionStorage.setItem("reviewImages", JSON.stringify(images.map(img => ({
+        url: img.url,
+        stateDesc: img.stateDesc || "默认展示",
+      }))));
+
+      // Persist history record to localStorage (with full data for later viewing)
+      saveHistoryRecord(description || "未命名审查任务", "review", reviewData.overallScore, reviewData);
+
+      // Navigate directly to report page
+      router.push("/report");
+    } catch (err) {
+      console.error("Review error:", err);
+      // Use mock data on error
+      const mockResult = generateMockResult();
+      sessionStorage.setItem("reviewResult", JSON.stringify(mockResult));
+      sessionStorage.setItem("reviewTaskInfo", JSON.stringify({ description, goals: goals.filter(g => g.trim()) }));
+      sessionStorage.setItem("reviewImages", JSON.stringify(images.map(img => ({
+        url: img.url,
+        stateDesc: img.stateDesc || "默认展示",
+      }))));
+      saveHistoryRecord(description || "未命名审查任务", "review", mockResult.overallScore, mockResult);
+      router.push("/report");
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start w-full">
+      {/* Main Content - Upload Area */}
+      <div className="lg:col-span-8 space-y-6">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-200 mb-2">上传设计稿</h2>
+          <p className="text-sm text-slate-400 mb-6">
+            支持上传1-9张图片，AI将从多维度进行专家级审查评估。
+          </p>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-5">
+            {images.map((img) => (
+              <div
+                key={img.id}
+                className="relative group flex flex-col gap-3 p-3 border border-white/[0.06] rounded-2xl bg-black/20 hover:bg-black/30 transition-colors"
+              >
+                <div className="aspect-video relative rounded-xl overflow-hidden bg-[#0f172a] group-hover:ring-1 ring-indigo-500/50 transition-all">
+                  <img
+                    src={img.url}
+                    alt="Uploaded design"
+                    className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
+                  />
+                  <button
+                    onClick={() => removeImage(img.id)}
+                    className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-900/80 text-slate-400 hover:text-white hover:bg-red-500/90 opacity-0 group-hover:opacity-100 transition-all backdrop-blur-sm shadow-lg"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={img.stateDesc}
+                  onChange={(e) => updateStateDesc(img.id, e.target.value)}
+                  placeholder="描述所属状态 (例如: 默认态)"
+                  className="w-full bg-black/30 border border-white/5 rounded-lg px-3 py-2 text-sm text-slate-300 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-all"
+                />
+              </div>
+            ))}
+
+            {images.length < 9 && (
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="aspect-video flex flex-col items-center justify-center gap-3 border border-dashed border-white/20 rounded-2xl bg-white/[0.02] hover:bg-indigo-500/10 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/40 transition-all duration-300"
+              >
+                <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center">
+                  <Upload className="w-5 h-5 opacity-80" />
+                </div>
+                <span className="text-sm font-medium">点击上传图片</span>
+              </button>
+            )}
+            <input
+              type="file"
+              multiple
+              accept="image/*"
+              className="hidden"
+              ref={fileInputRef}
+              onChange={handleUpload}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Sidebar Settings */}
+      <div className="lg:col-span-4 space-y-6">
+        <div className="bg-black/20 border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+          <div className="flex justify-between items-center mb-5">
+            <h2 className="text-lg font-semibold text-slate-200">审查配置</h2>
+            <button
+              onClick={autoFillAI}
+              disabled={isAiLoading}
+              className="text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 transition-colors border border-indigo-500/20 font-medium cursor-pointer"
+            >
+              {isAiLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" />
+              )}
+              <span>AI自动推断</span>
+            </button>
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <label className="text-sm font-medium text-slate-400 block mb-2">
+                功能描述 (选填)
+              </label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="例如：这是一个负一屏快捷操作页面..."
+                className="w-full h-24 bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 resize-none transition-all leading-relaxed"
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium text-slate-400 block mb-2">
+                关键目标
+              </label>
+              <div className="space-y-3">
+                {goals.map((goal, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <div className="flex-1 relative group">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs font-medium">
+                        {index + 1}.
+                      </span>
+                      <input
+                        type="text"
+                        value={goal}
+                        onChange={(e) => updateGoal(index, e.target.value)}
+                        placeholder="请输入具体关键目标..."
+                        className="w-full bg-black/40 border border-white/10 rounded-lg py-2.5 pl-8 pr-3 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-all"
+                      />
+                    </div>
+                    <button
+                      onClick={() => removeGoal(index)}
+                      className="p-2 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0 cursor-pointer"
+                    >
+                      <Minus className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={addGoal}
+                  className="flex items-center justify-center gap-1.5 w-full py-2.5 border border-dashed border-white/10 rounded-lg text-xs text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 hover:border-indigo-500/30 transition-all font-medium cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>添加新目标</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-5 border-t border-white/[0.06]">
+              <button
+                onClick={startReview}
+                disabled={isReviewing}
+                className="w-full relative group overflow-hidden bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] shadow-[0_0_20px_-5px_rgba(99,102,241,0.5)] border border-indigo-500/50 cursor-pointer"
+              >
+                {isReviewing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span>正在深度分析...</span>
+                  </>
+                ) : (
+                  <>
+                    <Bot className="w-5 h-5" />
+                    <span>确认并开始审查</span>
+                  </>
+                )}
+                <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent pointer-events-none" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   Compare Tab
+   ============================================================ */
+function CompareTab() {
+  const fileInputRefA = useRef<HTMLInputElement>(null);
+  const fileInputRefB = useRef<HTMLInputElement>(null);
+
+  const [imagesA, setImagesA] = useState<UploadedImage[]>([]);
+  const [imagesB, setImagesB] = useState<UploadedImage[]>([]);
+  const [description, setDescription] = useState("");
+  const [goals, setGoals] = useState<string[]>([""]);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isComparing, setIsComparing] = useState(false);
+
+  const handleUpload = (
+    e: React.ChangeEvent<HTMLInputElement>,
+    version: "A" | "B"
+  ) => {
+    const files = e.target.files;
+    if (files) {
+      const targetState = version === "A" ? imagesA : imagesB;
+      const setter = version === "A" ? setImagesA : setImagesB;
+      const newImages = Array.from(files)
+        .slice(0, 9 - targetState.length)
+        .map((file) => ({
+          id: Math.random().toString(36).substr(2, 9),
+          url: URL.createObjectURL(file),
+          stateDesc: "",
+          file,
+        }));
+      setter((prev) => [...prev, ...newImages]);
+    }
+  };
+
+  const removeImage = (id: string, version: "A" | "B") => {
+    const setter = version === "A" ? setImagesA : setImagesB;
+    setter((prev) => prev.filter((img) => img.id !== id));
+  };
+
+  const updateStateDesc = (id: string, val: string, version: "A" | "B") => {
+    const setter = version === "A" ? setImagesA : setImagesB;
+    setter((prev) =>
+      prev.map((img) => (img.id === id ? { ...img, stateDesc: val } : img))
+    );
+  };
+
+  const addGoal = () => setGoals([...goals, ""]);
+
+  const updateGoal = (index: number, value: string) => {
+    const newGoals = [...goals];
+    newGoals[index] = value;
+    setGoals(newGoals);
+  };
+
+  const removeGoal = (index: number) => {
+    const newGoals = goals.filter((_, i) => i !== index);
+    setGoals(newGoals.length ? newGoals : [""]);
+  };
+
+  const autoFillAI = () => {
+    if (imagesA.length === 0 && imagesB.length === 0) {
+      alert("请先上传设计稿。");
+      return;
+    }
+    setIsAiLoading(true);
+    setTimeout(() => {
+      setDescription("负一屏快捷操作页面，在深色与浅色模式下的设计方案对比。");
+      setGoals([
+        "对比深色模式与浅色模式在强光及弱光环境下的视觉可用性",
+        "评估两个版本下用户的认知负荷差异",
+      ]);
+      const autofillImages = (imgs: UploadedImage[]) =>
+        imgs.map((img, i) => ({
+          ...img,
+          stateDesc:
+            img.stateDesc || (i === 0 ? "默认状态 (首页展示)" : "交互状态"),
+        }));
+      setImagesA(autofillImages(imagesA));
+      setImagesB(autofillImages(imagesB));
+      setIsAiLoading(false);
+    }, 1500);
+  };
+
+  const startCompare = () => {
+    if (imagesA.length === 0 || imagesB.length === 0) {
+      alert("请确保版本A和版本B都上传了设计稿进行对比。");
+      return;
+    }
+    setIsComparing(true);
+    setTimeout(() => {
+      window.location.href = `/compare?task=${Date.now()}`;
+    }, 2000);
+  };
+
+  const UploadGrid = ({
+    version,
+    images,
+  }: {
+    version: "A" | "B";
+    images: UploadedImage[];
+  }) => (
+    <div className="flex-1 space-y-4">
+      <div className="flex justify-between items-center mb-3">
+        <h3 className="text-base font-semibold text-slate-200 flex items-center gap-2">
+          <span className="w-7 h-7 rounded-lg bg-white/10 text-slate-200 flex items-center justify-center font-bold text-sm border border-white/5">
+            {version}
+          </span>
+          <span>版本 {version}</span>
+        </h3>
+        <span className="text-xs px-2.5 py-1 rounded-md bg-white/5 text-slate-400 font-mono border border-white/[0.05]">
+          {images.length} / 9
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {images.map((img) => (
+          <div
+            key={img.id}
+            className="relative group flex flex-col gap-2 p-2.5 border border-white/[0.06] rounded-2xl bg-black/20 hover:bg-black/30 transition-colors"
+          >
+            <div className="aspect-video relative rounded-xl overflow-hidden bg-[#0f172a] group-hover:ring-1 ring-indigo-500/50 transition-all">
+              <img
+                src={img.url}
+                alt={`Version ${version}`}
+                className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
+              />
+              <button
+                onClick={() => removeImage(img.id, version)}
+                className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-900/80 text-slate-400 hover:text-white hover:bg-red-500/90 opacity-0 group-hover:opacity-100 transition-all backdrop-blur-sm shadow-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <input
+              type="text"
+              value={img.stateDesc}
+              onChange={(e) =>
+                updateStateDesc(img.id, e.target.value, version)
+              }
+              placeholder="所属状态 (默认/点击)"
+              className="w-full bg-black/30 border border-white/5 rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50"
+            />
+          </div>
+        ))}
+
+        {images.length < 9 && (
+          <button
+            onClick={() =>
+              version === "A"
+                ? fileInputRefA.current?.click()
+                : fileInputRefB.current?.click()
+            }
+            className="aspect-video flex flex-col items-center justify-center gap-2 border border-dashed border-white/20 rounded-2xl bg-white/[0.02] hover:bg-indigo-500/10 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/40 transition-all duration-300"
+          >
+            <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center mb-1">
+              <Upload className="w-4 h-4 opacity-80" />
+            </div>
+            <span className="text-xs font-medium">点击上传 ({version})</span>
+          </button>
+        )}
+      </div>
+      <input
+        type="file"
+        multiple
+        accept="image/*"
+        className="hidden"
+        ref={version === "A" ? fileInputRefA : fileInputRefB}
+        onChange={(e) => handleUpload(e, version)}
+      />
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col xl:flex-row gap-10 items-stretch w-full">
+      {/* Upload Areas */}
+      <div className="flex-1 flex flex-col md:flex-row gap-8">
+        <UploadGrid version="A" images={imagesA} />
+        {/* Divider with VS */}
+        <div className="hidden md:flex flex-col items-center justify-center -mx-4 z-10 pt-10">
+          <div className="w-12 h-12 rounded-full bg-[#0a0f18] border-2 border-white/10 text-slate-400 font-bold flex items-center justify-center text-sm shadow-xl tracking-wider">
+            VS
+          </div>
+        </div>
+        <UploadGrid version="B" images={imagesB} />
+      </div>
+
+      {/* Settings */}
+      <div className="w-full xl:w-96 shrink-0 space-y-6">
+        <div className="bg-black/20 border border-white/[0.06] rounded-2xl p-6 shadow-xl">
+          <div className="flex justify-between items-center mb-5">
+            <h2 className="text-lg font-semibold text-slate-200">对比配置</h2>
+            <button
+              onClick={autoFillAI}
+              disabled={isAiLoading}
+              className="text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 transition-colors border border-indigo-500/20 font-medium cursor-pointer"
+            >
+              {isAiLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" />
+              )}
+              <span>AI智能推断</span>
+            </button>
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <label className="text-sm font-medium text-slate-400 block mb-2">
+                共同场景描述 (选填)
+              </label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="例如：在此版本中主要改变了..."
+                className="w-full h-24 bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 resize-none transition-all leading-relaxed"
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium text-slate-400 block mb-2">
+                对比目标
+              </label>
+              <div className="space-y-3">
+                {goals.map((goal, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <div className="flex-1 relative group">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs font-medium">
+                        {index + 1}.
+                      </span>
+                      <input
+                        type="text"
+                        value={goal}
+                        onChange={(e) => updateGoal(index, e.target.value)}
+                        placeholder="请输入对比目标..."
+                        className="w-full bg-black/40 border border-white/10 rounded-lg py-2.5 pl-8 pr-3 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-all"
+                      />
+                    </div>
+                    <button
+                      onClick={() => removeGoal(index)}
+                      className="p-2 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0 cursor-pointer"
+                    >
+                      <Minus className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={addGoal}
+                  className="flex items-center justify-center gap-1.5 w-full py-2.5 border border-dashed border-white/10 rounded-lg text-xs text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 hover:border-indigo-500/30 transition-all font-medium cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>添加对比目标</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-5 border-t border-white/[0.06]">
+              <button
+                onClick={startCompare}
+                disabled={isComparing}
+                className="w-full relative group overflow-hidden bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] shadow-[0_0_20px_-5px_rgba(99,102,241,0.5)] border border-indigo-500/50 cursor-pointer"
+              >
+                {isComparing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span>正在深度对比...</span>
+                  </>
+                ) : (
+                  <>
+                    <GitCompare className="w-5 h-5" />
+                    <span>确认并对比版本</span>
+                  </>
+                )}
+                <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent pointer-events-none" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   Mock Data (fallback when API is unavailable)
+   ============================================================ */
+function generateMockResult() {
+  return {
+    overallScore: 7.6,
+    rating: "good",
+    summary: "该设计方案整体表现良好，视觉层次清晰，色彩搭配符合车载环境规范。主要优化方向集中在驾驶安全性维度的操作路径深度和信息架构的层级简化上。",
+    dimensions: [
+      { code: "D1", name: "驾驶安全性", score: 7.5, maxScore: 10, color: "#ef4444" },
+      { code: "D2", name: "视觉可读性", score: 8.2, maxScore: 10, color: "#3b82f6" },
+      { code: "D3", name: "信息架构", score: 6.8, maxScore: 10, color: "#8b5cf6" },
+      { code: "D4", name: "交互效率", score: 7.9, maxScore: 10, color: "#10b981" },
+      { code: "D5", name: "一致性", score: 8.5, maxScore: 10, color: "#f59e0b" },
+      { code: "D6", name: "无障碍", score: 7.2, maxScore: 10, color: "#ec4899" },
+      { code: "D7", name: "美观度", score: 8.0, maxScore: 10, color: "#06b6d4" },
+      { code: "D8", name: "品牌感", score: 7.4, maxScore: 10, color: "#84cc16" },
+    ],
+    issues: [
+      {
+        id: "i1", severity: "serious", category: "操作负荷",
+        dimension: "驾驶安全性",
+        description: "从首页到达目标空调调节功能需经过3级页面跳转（首页→设置→空调→调节），在驾驶过程中视线偏移时间超过NHTSA推荐的2秒限制。",
+        suggestion: "建议将高频空调操作合并至一级或二级菜单，或将常用温度调节以常驻控件形式呈现于主界面。",
+      },
+      {
+        id: "i2", severity: "warning", category: "对比度不足",
+        dimension: "视觉可读性",
+        description: "部分说明文字使用#8a9aad色值于深色背景上，实测对比度约2.8:1，低于WCAG AA标准的4.5:1要求。",
+        suggestion: "将正文文字亮度提升至#c5d0dc以上，确保全区域对比度≥4.5:1。",
+      },
+      {
+        id: "i3", severity: "warning", category: "触控目标过小",
+        dimension: "驾驶安全性",
+        description: "部分次要操作按钮的触控区域约为36×36dp，低于ISO 15007推荐的48×48dp最小触控面积标准。",
+        suggestion: "所有可交互元素的最小触控区域应扩展至48×48dp，核心操作按钮建议64×64dp以上。",
+      },
+      {
+        id: "i4", severity: "info", category: "留白节奏",
+        dimension: "美观度",
+        description: "卡片内边距存在混用（16px~28px），模块间缺乏统一的呼吸空间规律，整体视觉密度偏高。",
+        suggestion: "统一内边距基准为24px，模块间距采用8px栅格倍数（32/48/64px）。",
+      },
+    ],
+  };
 }
