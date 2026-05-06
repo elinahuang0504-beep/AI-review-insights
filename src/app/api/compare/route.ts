@@ -3,6 +3,9 @@ import { performComparison } from "@/lib/gemini";
 
 export async function POST(req: NextRequest) {
   try {
+    const contentLength = req.headers.get("content-length") || "unknown";
+    console.log(`[Compare API] Request received, size: ${contentLength} bytes`);
+
     const body = await req.json();
 
     // Validate required fields

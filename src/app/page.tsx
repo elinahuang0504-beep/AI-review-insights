@@ -311,6 +311,7 @@ function ReviewTab() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [description, setDescription] = useState("");
   const [goals, setGoals] = useState<string[]>([""]);
+  const [scene, setScene] = useState<"parked" | "driving">("driving");
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isReviewing, setIsReviewing] = useState(false);
 
@@ -352,32 +353,52 @@ function ReviewTab() {
     setGoals(newGoals.length ? newGoals : [""]);
   };
 
-  const autoFillAI = () => {
+  const autoFillAI = async () => {
     if (images.length === 0) {
       alert("请先上传设计稿。");
       return;
     }
     setIsAiLoading(true);
-    setTimeout(() => {
-      setDescription("中控主屏幕快捷操作面板");
-      setGoals([
-        "用户需要在夜间驾驶环境下快速准确地找到空调、座椅加热等高频车控按键",
-        "避免在驾驶操作时产生意外的误触",
-      ]);
-      setImages((prev) =>
-        prev.map((img, i) => ({
-          ...img,
-          stateDesc:
-            img.stateDesc ||
-            (i === 0
-              ? "默认状态 (首页展示)"
-              : i === 1
-              ? "按键点击交互反馈"
-              : "模态弹窗状态"),
+    try {
+      const imageData = await Promise.all(
+        images.map(async (img) => ({
+          data: await fileToBase64(img.file),
+          name: img.file.name,
         }))
       );
+      // 3分钟超时（大图片分析需要更长时间）
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      let response: Response;
+      try {
+        response = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ images: imageData, action: "infer" }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const json = await response.json();
+      if (json.success && json.data) {
+        setDescription(json.data.functionName);
+        setGoals(json.data.goals.length > 0 ? json.data.goals : [""]);
+        setImages((prev) =>
+          prev.map((img, i) => ({
+            ...img,
+            stateDesc: json.data.imageStates[i] || img.stateDesc || `第${i + 1}张`,
+          }))
+        );
+      } else {
+        alert(json.error || "AI推断失败，请重试");
+      }
+    } catch (err) {
+      console.error("Auto-fill AI error:", err);
+      alert("AI推断失败，请检查网络连接");
+    } finally {
       setIsAiLoading(false);
-    }, 1500);
+    }
   };
 
   const startReview = async () => {
@@ -397,20 +418,28 @@ function ReviewTab() {
         }))
       );
 
-      // Call AI review API
-      const response = await fetch("/api/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          images: imageData,
-          taskName: description || "未命名审查任务",
-          description,
-          goals: goals.filter(g => g.trim()),
-          systemType: "中控屏",
-          scene: "行驶中+静止通用",
-          evalMode: "standard",
-        }),
-      });
+      // Call AI review API (3分钟超时，大图片分析需要更长时间)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      let response: Response;
+      try {
+        response = await fetch("/api/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            images: imageData,
+            taskName: description || "未命名审查任务",
+            description,
+            goals: goals.filter(g => g.trim()),
+            systemType: "中控屏",
+            scene: scene === "driving" ? "驾驶中使用" : "静止状态使用",
+            evalMode: scene === "driving" ? "safety" : "standard",
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       let reviewData;
       
@@ -552,6 +581,41 @@ function ReviewTab() {
 
             <div>
               <label className="text-sm font-medium text-slate-400 block mb-2">
+                使用场景
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => setScene("driving")}
+                  className={`flex items-center justify-center gap-2 py-2.5 rounded-xl border text-sm font-medium transition-all cursor-pointer ${
+                    scene === "driving"
+                      ? "bg-red-500/10 border-red-500/30 text-red-400"
+                      : "bg-black/30 border-white/8 text-slate-400 hover:border-white/20 hover:text-slate-300"
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${scene === "driving" ? "bg-red-400" : "bg-slate-600"}`} />
+                  驾驶中使用
+                </button>
+                <button
+                  onClick={() => setScene("parked")}
+                  className={`flex items-center justify-center gap-2 py-2.5 rounded-xl border text-sm font-medium transition-all cursor-pointer ${
+                    scene === "parked"
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                      : "bg-black/30 border-white/8 text-slate-400 hover:border-white/20 hover:text-slate-300"
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${scene === "parked" ? "bg-emerald-400" : "bg-slate-600"}`} />
+                  静止状态使用
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1.5">
+                {scene === "driving"
+                  ? "安全优先模式：重点审查视线偏移、操作步数、触控安全性"
+                  : "标准模式：均衡评估视觉、交互、美观等维度"}
+              </p>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium text-slate-400 block mb-2">
                 关键目标
               </label>
               <div className="space-y-3">
@@ -673,28 +737,54 @@ function CompareTab() {
     setGoals(newGoals.length ? newGoals : [""]);
   };
 
-  const autoFillAI = () => {
+  const autoFillAI = async () => {
     if (imagesA.length === 0 && imagesB.length === 0) {
       alert("请先上传设计稿。");
       return;
     }
     setIsAiLoading(true);
-    setTimeout(() => {
-      setDescription("负一屏快捷操作页面，在深色与浅色模式下的设计方案对比。");
-      setGoals([
-        "对比深色模式与浅色模式在强光及弱光环境下的视觉可用性",
-        "评估两个版本下用户的认知负荷差异",
-      ]);
-      const autofillImages = (imgs: UploadedImage[]) =>
-        imgs.map((img, i) => ({
-          ...img,
-          stateDesc:
-            img.stateDesc || (i === 0 ? "默认状态 (首页展示)" : "交互状态"),
-        }));
-      setImagesA(autofillImages(imagesA));
-      setImagesB(autofillImages(imagesB));
+    try {
+      // 合并两组图片一起推断
+      const allImages = [...imagesA, ...imagesB];
+      const imageData = await Promise.all(
+        allImages.map(async (img) => ({
+          data: await fileToBase64(img.file),
+          name: img.file.name,
+        }))
+      );
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      let response: Response;
+      try {
+        response = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ images: imageData, action: "infer" }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const json = await response.json();
+      if (json.success && json.data) {
+        setDescription(json.data.functionName);
+        setGoals(json.data.goals.length > 0 ? json.data.goals : [""]);
+        const autofillImages = (imgs: UploadedImage[], offset: number) =>
+          imgs.map((img, i) => ({
+            ...img,
+            stateDesc: json.data.imageStates[i + offset] || img.stateDesc || (i === 0 ? "默认状态 (首页展示)" : "交互状态"),
+          }));
+        setImagesA(autofillImages(imagesA, 0));
+        setImagesB(autofillImages(imagesB, imagesA.length));
+      } else {
+        alert(json.error || "AI推断失败，请重试");
+      }
+    } catch (err) {
+      console.error("Compare AI error:", err);
+      alert("AI推断失败，请检查网络连接");
+    } finally {
       setIsAiLoading(false);
-    }, 1500);
+    }
   };
 
   const startCompare = () => {

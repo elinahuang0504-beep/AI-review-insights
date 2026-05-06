@@ -51,6 +51,12 @@ export interface ImageAnalysisResult {
   uiDescription: string;
 }
 
+export interface InferenceResult {
+  functionName: string;       // 推断的功能名称
+  goals: string[];            // 关键目标列表
+  imageStates: string[];      // 每张图的状态描述
+}
+
 export interface CompareResult {
   v1Review: ReviewResult;
   v2Review: ReviewResult;
@@ -120,6 +126,8 @@ function getGLMClient(): OpenAI {
   return new OpenAI({
     apiKey,
     baseURL: "https://open.bigmodel.cn/api/paas/v4/",
+    timeout: 180000, // 3分钟超时（大图片分析需要更长时间）
+    maxRetries: 2,
   });
 }
 
@@ -314,8 +322,15 @@ export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
       dimensions: enrichedDimensions,
       issues: enrichedIssues,
     };
-  } catch (error) {
-    console.error("Zhipu GLM review error:", error);
+  } catch (error: any) {
+    console.error("Zhipu GLM review error:", {
+      message: error?.message,
+      status: error?.status,
+      code: error?.code,
+      type: error?.type,
+      stack: error?.stack?.slice(0, 500),
+      errorBody: error?.error ? JSON.stringify(error.error).slice(0, 500) : undefined,
+    });
     throw new Error(`AI分析失败: ${error instanceof Error ? error.message : "未知错误"}`);
   }
 }
@@ -449,5 +464,65 @@ export async function analyzeImages(
       detectedElements: [],
       uiDescription: "分析失败",
     }));
+  }
+}
+
+/**
+ * AI智能推断：根据上传的HMI截图，推断功能名称、关键目标和各图状态
+ */
+export async function inferFromImages(
+  images: { data: string; name: string }[]
+): Promise<InferenceResult> {
+  const client = getGLMClient();
+
+  const imageContents = prepareImageContents(images.map(i => ({ ...i, state: "" })));
+
+  try {
+    const completion = await withRetry(() =>
+      client.chat.completions.create({
+        model: VISION_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: [
+              ...imageContents,
+              {
+                type: "text",
+                text: `你是一位资深车载HMI产品经理。请分析以上${images.length}张HMI设计截图，推断以下信息并严格按JSON格式输出：
+
+1. **functionName**: 这是什么功能页面？用简洁中文描述（例如"中控主屏幕快捷操作面板"、"空调控制界面"、"导航地图主页"等），不超过20字
+2. **goals**: 用户使用这个功能时最关键的2-3个目标（每条不超过30字，关注驾驶安全、操作效率、信息获取等）
+3. **imageStates**: 每张图片对应的UI状态描述（与图片顺序一致，例如"默认首页状态"、"点击空调按钮后的展开弹窗"、"温度调节滑块交互态"等）
+
+输出JSON（不要markdown）：
+{"functionName":"...","goals":["...","..."],"imageStates":["...","..."]}`,
+              },
+            ],
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 1024,
+      })
+    );
+
+    const responseText = completion.choices[0]?.message?.content || "";
+    const parsed = JSON.parse(cleanJsonResponse(responseText));
+
+    return {
+      functionName: parsed.functionName || "未命名功能",
+      goals: Array.isArray(parsed.goals) && parsed.goals.length > 0
+        ? parsed.goals.slice(0, 4)
+        : ["提升操作效率", "降低驾驶干扰"],
+      imageStates: Array.isArray(parsed.imageStates)
+        ? parsed.imageStates.map((s: string, i: number) => s || `第${i + 1}张`)
+        : images.map((_, i) => `第${i + 1}张`),
+    };
+  } catch (error) {
+    console.error("Inference error:", error);
+    return {
+      functionName: "未命名审查任务",
+      goals: ["请补充关键目标"],
+      imageStates: images.map((_, i) => `第${i + 1}张`),
+    };
   }
 }

@@ -142,17 +142,26 @@ export default function ComparePage() {
         v2Images.map(async (img) => ({ data: await fileToBase64(img.file), name: img.file.name, state: img.state }))
       );
 
-      const response = await fetch("/api/compare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          v1Images: v1Data,
-          v2Images: v2Data,
-          taskName: taskInfo.name,
-          description: taskInfo.description,
-          goals: taskInfo.goals.filter(g => g.trim()),
-        }),
-      });
+      // 3分钟超时（对比分析涉及两组大图片）
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      let response: Response;
+      try {
+        response = await fetch("/api/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            v1Images: v1Data,
+            v2Images: v2Data,
+            taskName: taskInfo.name,
+            description: taskInfo.description,
+            goals: taskInfo.goals.filter(g => g.trim()),
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({ error: "请求失败" }));

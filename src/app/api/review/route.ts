@@ -3,6 +3,10 @@ import { performReview } from "@/lib/gemini";
 
 export async function POST(req: NextRequest) {
   try {
+    // 日志：记录请求大小，帮助诊断问题
+    const contentLength = req.headers.get("content-length") || "unknown";
+    console.log(`[Review API] Request received, size: ${contentLength} bytes`);
+
     const body = await req.json();
     
     // Validate required fields

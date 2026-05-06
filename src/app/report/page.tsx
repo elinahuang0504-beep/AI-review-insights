@@ -235,6 +235,78 @@ function ScoreRing({ score, rating }: { score: number; rating: string }) {
 /* ============================================================
    Report Page Component
    ============================================================ */
+/* ============================================================
+   Export Helpers
+   ============================================================ */
+
+function handleExportPDF() {
+  try {
+    window.print();
+  } catch (err) {
+    console.error("PDF export failed:", err);
+    alert("导出失败，请尝试使用「导出 Word」功能");
+  }
+}
+
+function handleExportWord(result: ReviewResult | null) {
+  if (!result) { alert("没有可导出的数据"); return; }
+
+  const ratingMap: Record<string, string> = {
+    excellent: "优秀", good: "良好", average: "一般", poor: "需改进",
+  };
+  const severityMap: Record<string, string> = {
+    critical: "致命", serious: "严重", warning: "警告", info: "提示",
+  };
+
+  let html = `
+    <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+    <head><meta charset='utf-8'><title>HMI设计审查报告</title>
+    <style>body{font-family:微软雅黑,sans-serif;font-size:14px;color:#333;line-height:1.8;}
+    h1{font-size:22px;color:#1a1a2e;border-bottom:3px solid #4f46e5;padding-bottom:10px;}
+    h2{font-size:16px;color:#4f46e5;margin-top:24px;border-left:4px solid #4f46e5;padding-left:10px;}
+    h3{font-size:14px;color:#555;margin-top:16px;}
+    table{width:100%;border-collapse:collapse;margin:12px 0;}
+    th,td{border:1px solid #ddd;padding:8px 12px;text-align:left;font-size:13px;}
+    th{background:#f0f0f5;font-weight:600;}
+    .score-box{display:inline-block;background:#4f46e5;color:#fff;padding:6px 16px;border-radius:20px;font-size:28px;font-weight:bold;margin:16px 0;}
+    .issue-card{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin:10px 0;}
+    .as-is{background:#fef2f2;border-left:4px solid #ef4444;}
+    .to-be{background:#ecfdf5;border-left:4px solid #10b981;}
+    </style></head><body>
+    <h1>Smart Review - HMI设计审查报告</h1>
+    <p><strong>评级：</strong>${ratingMap[result.rating] || result.rating} &nbsp;|&nbsp; <strong>总分：</strong>${(result.overallScore * 10).toFixed(0)} / 100</p>
+    <p><strong>摘要：</strong>${result.summary}</p>
+
+    <h2>维度评分详情</h2><table><tr><th>维度</th><th>得分</th><th>满分</th></tr>
+    ${result.dimensions.map(d => `<tr><td>${d.name}</td><td>${d.score.toFixed(1)}</td><td>${d.maxScore}</td></tr>`).join('')}
+    </table>
+
+    <h2>问题清单（共${result.issues.length}项）</h2>
+    ${result.issues.map(issue => `
+      <div class="issue-card">
+        <h3>[${severityMap[issue.severity] || issue.severity}] ${issue.dimension} — ${issue.category}</h3>
+        <div class="as-is"><strong>AS-IS 当前问题：</strong>${issue.description}</div>
+        <div class="to-be"><strong>TO-BE 改进建议：</strong>${issue.suggestion}</div>
+      </div>
+    `).join('')}
+
+    <p style="margin-top:32px;color:#999;font-size:12px;">由 Smart Review AI 辅助生成 · ${new Date().toLocaleString('zh-CN')}</p>
+    </body></html>`;
+
+  const blob = new Blob(['\ufeff' + html], { type: 'application/msword' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `HMI审查报告_${new Date().toISOString().slice(0,10)}.doc`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ============================================================
+   Report Page Component
+   ============================================================ */
 export default function ReportPage() {
   const [result, setResult] = useState<ReviewResult | null>(null);
   const [images, setImages] = useState<UploadedImagePreview[]>([]);
@@ -297,6 +369,31 @@ export default function ReportPage() {
   };
 
   return (
+    <>
+      {/* Print Styles */}
+      <style dangerouslySetInnerHTML={{ __html: `
+        @media print {
+          body { background: white !important; color: #333 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .no-print { display: none !important; }
+          .print-only { display: block !important; }
+          .min-h-screen { min-height: auto !important; padding: 20px !important; }
+          .bg-\\[\\#0a0f18\\] { background: white !important; }
+          .text-white { color: #1a1a2e !important; }
+          .text-slate-200, .text-slate-300, .text-slate-400 { color: #444 !important; }
+          .text-indigo-300, .text-indigo-400 { color: #4338ca !important; }
+          .border-white\\/\\[0\\.06\\], .border-white\\/\\[0\\.08\\] { border-color: #e5e7eb !important; }
+          .bg-white\\/\\[0\\.02\\], .bg-white\\/\\[0\\.03\\] { background: #f9fafb !important; border: 1px solid #e5e7eb !important; }
+          .rounded-xl, .rounded-2xl { border-radius: 6px !important; }
+          .shadow-xl, .shadow-\\[0_8px_32px_rgba\\(0,0,0,0\\.4\\)\\] { box-shadow: none !important; }
+          .backdrop-blur-md { backdrop-filter: none !important; }
+          header.sticky { position: relative !important; background: #f9fafb !important; border-bottom: 2px solid #ddd !important; padding: 12px 20px !important; }
+          .fixed { position: static !important; }
+          .grid { display: block !important; page-break-inside: avoid; }
+          .aspect-video img { max-width: 100% !important; height: auto !important; }
+          .overflow-hidden { overflow: visible !important; }
+        }
+      ` }} />
+
     <div className="min-h-screen bg-[#0a0f18]">
       {/* Background */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
@@ -315,9 +412,13 @@ export default function ReportPage() {
           <span className="text-sm font-medium text-white">审查报告</span>
         </div>
         <div className="flex items-center gap-2">
-          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors">
+          <button onClick={handleExportPDF} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors cursor-pointer">
             <FileDown className="w-3.5 h-3.5" />
             导出 PDF
+          </button>
+          <button onClick={() => handleExportWord(result)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors cursor-pointer">
+            <Download className="w-3.5 h-3.5" />
+            导出 Word
           </button>
           <Link href="/" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20 transition-colors">
             <Home className="w-3.5 h-3.5" />
@@ -537,11 +638,11 @@ export default function ReportPage() {
 
         {/* Footer Actions */}
         <div className="flex items-center gap-3 pt-4 border-t border-white/[0.06]">
-          <button className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white transition-colors">
+          <button onClick={handleExportPDF} className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white transition-colors cursor-pointer">
             <Download className="w-4 h-4" />
             导出 PDF 报告
           </button>
-          <button className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-medium bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 border border-white/[0.06] transition-colors">
+          <button onClick={() => handleExportWord(result)} className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-medium bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 border border-white/[0.06] transition-colors cursor-pointer">
             <FileDown className="w-4 h-4" />
             导出 Word
           </button>
@@ -552,5 +653,6 @@ export default function ReportPage() {
         </div>
       </div>
     </div>
+    </>
   );
 }
