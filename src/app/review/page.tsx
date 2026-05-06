@@ -567,9 +567,12 @@ function Step4Report({ result, error }: { result: ReviewResult; error?: string |
 
   const getSeverityConfig = (severity: string) => {
     switch (severity) {
-      case "critical": return { label: "致命", class: "severity-critical" };
-      case "serious": return { label: "严重", class: "severity-serious" };
-      case "warning": return { label: "警告", class: "severity-warning" };
+      case "critical":
+      case "致命": return { label: "致命", class: "severity-critical" };
+      case "serious":
+      case "严重": return { label: "严重", class: "severity-serious" };
+      case "warning":
+      case "警告": return { label: "警告", class: "severity-warning" };
       default: return { label: "提示", class: "severity-info" };
     }
   };

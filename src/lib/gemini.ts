@@ -172,6 +172,32 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
 }
 
 /* ============================================================
+   Severity Normalization
+   智谱AI可能返回中文或英文的severity值，统一映射为标准英文
+   ============================================================ */
+
+const SEVERITY_MAP: Record<string, "critical" | "serious" | "warning" | "info"> = {
+  // English
+  critical: "critical",
+  serious: "serious",
+  warning: "warning",
+  info: "info",
+  // Chinese
+  致命: "critical",
+  严重: "serious",
+  警告: "warning",
+  提示: "info",
+  一般: "info",
+  优化: "info",
+  建议: "info",
+};
+
+function normalizeSeverity(raw: string): "critical" | "serious" | "warning" | "info" {
+  const trimmed = String(raw).trim().toLowerCase();
+  return SEVERITY_MAP[raw] || SEVERITY_MAP[trimmed] || "info";
+}
+
+/* ============================================================
    Core Functions
    ============================================================ */
 
@@ -306,8 +332,7 @@ export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
 
     const enrichedIssues: IssueItem[] = (parsed.issues || []).map((issue: any, idx: number) => ({
       id: issue.id || `issue_${idx + 1}`,
-      severity: ["critical", "serious", "warning", "info"].includes(issue.severity)
-        ? issue.severity : "info",
+      severity: normalizeSeverity(issue.severity),
       category: issue.category || "未分类",
       dimension: issue.dimension || "其他",
       description: issue.description || "",
@@ -386,8 +411,7 @@ export async function performComparison(req: CompareRequest): Promise<CompareRes
       }),
       issues: (review.issues || []).map((issue: any, idx: number) => ({
         id: issue.id || `issue_${idx + 1}`,
-        severity: ["critical", "serious", "warning", "info"].includes(issue.severity)
-          ? issue.severity : "info",
+        severity: normalizeSeverity(issue.severity),
         category: issue.category || "未分类",
         dimension: issue.dimension || "其他",
         description: issue.description || "",

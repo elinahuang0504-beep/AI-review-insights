@@ -161,18 +161,21 @@ function RadarChart({ dimensions }: { dimensions: DimensionScore[] }) {
 function getSeverityConfig(severity: string) {
   switch (severity) {
     case "critical":
+    case "致命":
       return {
         label: "致命",
         bg: "bg-red-500/10 border-red-500/20 text-red-400",
         dot: "bg-red-500",
       };
     case "serious":
+    case "严重":
       return {
         label: "严重",
         bg: "bg-orange-500/10 border-orange-500/20 text-orange-400",
         dot: "bg-orange-500",
       };
     case "warning":
+    case "警告":
       return {
         label: "警告",
         bg: "bg-yellow-500/10 border-yellow-500/20 text-yellow-400",
@@ -604,14 +607,24 @@ export default function ReportPage() {
 
           {/* Issues Responsive Card Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {result.issues.map((issue) => (
+            {result.issues.map((issue) => {
+              const sevCfg = getSeverityConfig(issue.severity);
+              return (
                 <div
                   key={issue.id}
                   className="rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-all overflow-hidden"
                 >
                   <div className="p-4">
-                    {/* Header row - dimension as title */}
-                    <h4 className="text-sm font-semibold text-indigo-300 mb-2.5">{issue.dimension}</h4>
+                    {/* Header row - severity badge + dimension title */}
+                    <div className="flex items-center justify-between mb-2.5">
+                      <h4 className="text-sm font-semibold text-indigo-300">{issue.dimension}</h4>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider shrink-0 border ${sevCfg.bg}`}>
+                        {sevCfg.label}
+                      </span>
+                    </div>
+
+                    {/* Category sub-label */}
+                    <p className="text-[11px] text-slate-500 mb-2.5">{issue.category}</p>
 
                     {/* AS-IS / TO-BE cards */}
                     <div className="rounded-lg overflow-hidden border border-white/[0.04]">
@@ -626,7 +639,8 @@ export default function ReportPage() {
                     </div>
                   </div>
                 </div>
-            ))}
+              );
+            })}
 
             {result.issues.length === 0 && (
               <div className="col-span-full py-16 text-center rounded-xl border border-dashed border-white/[0.08]">
