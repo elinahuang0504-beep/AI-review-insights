@@ -125,25 +125,21 @@ function RadarChart({ dimensions }: { dimensions: DimensionScore[] }) {
         />
       ))}
 
-      {/* Labels - using foreignObject for text wrapping */}
+      {/* Labels - using foreignObject for text wrapping with more space */}
       {dimensions.map((dim, i) => {
         const lp = labelPoints[i];
         return (
-          <foreignObject
-            key={i}
-            x={lp.x - 50}
-            y={lp.y - 10}
-            width="100"
-            height="20"
-          >
+          <foreignObject key={i} x={lp.x - 55} y={lp.y - 12} width="110" height="32">
             <div
               style={{
                 width: "100%",
                 textAlign: "center",
-                fontSize: "9.5px",
+                fontSize: "10px",
                 fontWeight: 500,
                 color: "#94a3b8",
-                lineHeight: 1.3,
+                lineHeight: 1.4,
+                wordBreak: "break-word",
+                overflowWrap: "break-word",
               }}
             >
               {dim.name}
@@ -509,7 +505,7 @@ export default function ReportPage() {
               <ScoreRing score={result.overallScore} rating={result.rating} />
               <div className="flex-1 min-w-0 pt-1">
                 <h2 className="text-lg font-bold text-white mb-1.5">HMI 设计审查报告</h2>
-                <p className="text-sm text-slate-300 leading-relaxed line-clamp-3">
+                <p className="text-sm text-slate-300 leading-relaxed">
                   {result.summary}
                 </p>
               </div>

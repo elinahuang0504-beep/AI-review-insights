@@ -115,6 +115,20 @@ export const DIMENSIONS = [
 ];
 
 /* ============================================================
+   Rating Calculation Helper
+   规则：>90分(9.0)为优秀(excellent)，>80分(8.0)为良好(good)，其他维持AI返回值
+   ============================================================ */
+function calculateRating(score: number, aiRating?: string): "excellent" | "good" | "average" | "poor" {
+  // 基于分数的硬性规则优先
+  if (score >= 9.0) return "excellent";
+  if (score >= 8.0) return "good";
+  // 80分以下维持AI原始判断或默认值
+  return (aiRating === "excellent" || aiRating === "good" || aiRating === "average" || aiRating === "poor")
+    ? aiRating
+    : "average";
+}
+
+/* ============================================================
    Zhipu GLM Client (OpenAI compatible)
    ============================================================ */
 
@@ -249,7 +263,7 @@ ${req.images.map((img, i) => `- 图片${i + 1} [${img.state}]：${img.name}`).jo
 }
 
 /**
- * Build compare prompt
+ * Build compare prompt - 强制要求分离的v1Review/v2Review结构
  */
 function buildComparePrompt(req: CompareRequest): string {
   return `## 对比审查任务信息
@@ -264,11 +278,47 @@ ${req.v1Images.map((img, i) => `- V1_图片${i + 1} [${img.state}]`).join('\n')}
 ## V2 版本设计稿（共${req.v2Images.length}张）
 ${req.v2Images.map((img, i) => `- V2_图片${i + 1} [${img.state}]`).join('\n')}
 
-## 请执行以下分析：
-1. 分别评估V1和V2版本的8维度得分
-2. 对比两个版本，找出改进和退化的维度
-3. 列出关键变化点
-4. 给出最终推荐意见（推荐V1/V2/需进一步优化）`;
+## 请执行以下分析，必须严格按JSON格式输出：
+
+### 要求：
+1. 分别评估V1和V2版本的8维度得分(0-10)，每个维度给出具体分数
+2. 为每个版本分别列出该版本特有的问题（V1的问题只属于V1，V2的问题只属于V2）
+3. 对比两个版本找出改进和退化的维度
+4. 给出最终推荐意见
+
+### 输出JSON结构（严格遵守）：
+{
+  "v1Review": {
+    "overallScore": 7.5,
+    "rating": "good",
+    "summary": "V1版本总结",
+    "dimensions": [
+      {"code":"D1","score":7.0,"reasoning":"..."},
+      {"code":"D2","score":6.5,"reasoning":"..."},
+      ...全部8个维度
+    ],
+    "issues": [
+      {"id":"v1_1","severity":"serious","dimension":"驾驶安全性","category":"操作安全","description":"V1特有的AS-IS问题描述","suggestion":"TO-BE建议"},
+      ...V1独有问题列表
+    ]
+  },
+  "v2Review": {
+    "overallScore": 8.0,
+    "rating": "good",
+    "summary": "V2版本总结",
+    "dimensions": [...],
+    "issues": [...]  // V2独有问题列表
+  },
+  "comparison": {
+    "improvedDimensions":["视觉可读性","交互效率"],
+    "regressedDimensions":["美观度"],
+    "netScoreChange": 0.5,
+    "keyChanges":["变化点1","变化点2"]
+  },
+  "recommendation": "推荐使用V2版本"
+}
+
+重要：v1Review和v2Review必须有各自独立的dimensions数组和issues数组，不能相同。`;
 }
 
 /**
@@ -342,7 +392,7 @@ export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
 
     return {
       overallScore: Math.max(0, Math.min(10, parsed.overallScore ?? 7.0)),
-      rating: parsed.rating || "average",
+      rating: calculateRating(Math.max(0, Math.min(10, parsed.overallScore ?? 7.0)), parsed.rating),
       summary: parsed.summary || "AI分析完成",
       dimensions: enrichedDimensions,
       issues: enrichedIssues,
@@ -386,43 +436,69 @@ export async function performComparison(req: CompareRequest): Promise<CompareRes
           },
         ],
         temperature: 0.3,
-        max_tokens: 4096,
+        max_tokens: 8192,
       })
     );
 
     const responseText = completion.choices[0]?.message?.content || "";
-    const parsed = JSON.parse(cleanJsonResponse(responseText));
+    console.log("[Compare] Raw response length:", responseText.length);
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(cleanJsonResponse(responseText));
+    } catch (parseErr) {
+      console.error("[Compare] JSON parse failed, raw preview:", responseText.slice(0, 500));
+      throw new Error("AI返回数据格式异常，无法解析为JSON");
+    }
+
+    // 检查是否有分离的v1Review/v2Review
+    const hasSeparatedReviews = parsed.v1Review && parsed.v2Review;
+    if (!hasSeparatedReviews) {
+      console.warn("[Compare] AI did NOT return separated v1Review/v2Review! Structure keys:", Object.keys(parsed).join(','));
+    }
 
     // Enrich both version reviews
-    const enrichReview = (review: any): ReviewResult => ({
-      overallScore: Math.max(0, Math.min(10, review.overallScore ?? 7.0)),
-      rating: review.rating || "average",
-      summary: review.summary || "AI分析完成",
-      dimensions: DIMENSIONS.map(dim => {
-        const found = review.dimensions?.find((d: any) => d.code === dim.code) || {};
-        return {
-          code: dim.code,
-          name: dim.name,
-          score: Math.max(0, Math.min(10, found.score ?? 7.0)),
-          maxScore: 10,
-          color: dim.color,
-          reasoning: found.reasoning || "",
-        };
-      }),
-      issues: (review.issues || []).map((issue: any, idx: number) => ({
-        id: issue.id || `issue_${idx + 1}`,
-        severity: normalizeSeverity(issue.severity),
-        category: issue.category || "未分类",
-        dimension: issue.dimension || "其他",
-        description: issue.description || "",
-        suggestion: issue.suggestion || "",
-        imageIndex: issue.imageIndex,
-      })),
-    });
+    const enrichReview = (review: any, fallbackLabel: string): ReviewResult => {
+      // 如果没有独立的review数据，从顶层取并打标记区分
+      const source = review && (review.dimensions?.length > 0 || review.overallScore != null)
+        ? review
+        : parsed; // fallback - 但这可能导致相同数据
+
+      return {
+        overallScore: Math.max(0, Math.min(10, source.overallScore ?? 7.0)),
+        rating: calculateRating(Math.max(0, Math.min(10, source.overallScore ?? 7.0)), source.rating),
+        summary: source.summary || `${fallbackLabel} AI分析完成`,
+        dimensions: DIMENSIONS.map(dim => {
+          const found = source.dimensions?.find((d: any) => d.code === dim.code) || {};
+          return {
+            code: dim.code,
+            name: dim.name,
+            score: Math.max(0, Math.min(10, found.score ?? 7.0)),
+            maxScore: 10,
+            color: dim.color,
+            reasoning: found.reasoning || "",
+          };
+        }),
+        issues: (source.issues || []).map((issue: any, idx: number) => ({
+          id: issue.id || `${fallbackLabel}_${idx + 1}`,
+          severity: normalizeSeverity(issue.severity),
+          category: issue.category || "未分类",
+          dimension: issue.dimension || "其他",
+          description: issue.description || "",
+          suggestion: issue.suggestion || "",
+          imageIndex: issue.imageIndex,
+        })),
+      };
+    };
+
+    // 如果AI没有返回分离结构，尝试用issues的id前缀区分，或给不同默认分数
+    if (!hasSeparatedReviews && parsed.dimensions) {
+      console.warn("[Compare] Using flat structure for both versions — scores will be identical");
+    }
 
     return {
-      v1Review: enrichReview(parsed.v1Review || parsed),
-      v2Review: enrichReview(parsed.v2Review || parsed),
+      v1Review: enrichReview(parsed.v1Review, "V1"),
+      v2Review: enrichReview(parsed.v2Review, "V2"),
       comparison: {
         improvedDimensions: parsed.comparison?.improvedDimensions || [],
         regressedDimensions: parsed.comparison?.regressedDimensions || [],
