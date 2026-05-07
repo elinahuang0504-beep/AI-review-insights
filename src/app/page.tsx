@@ -323,7 +323,7 @@ function ReviewTab() {
         .map((file) => ({
           id: Math.random().toString(36).substr(2, 9),
           url: URL.createObjectURL(file),
-          stateDesc: "",
+          stateDesc: file.name.replace(/\.[^/.]+$/, ""), // 默认使用文件名（去除扩展名）
           file,
         }));
       setImages((prev) => [...prev, ...newImages]);
@@ -444,15 +444,16 @@ function ReviewTab() {
       let reviewData;
       
       if (!response.ok) {
-        // API failed - use mock data
-        console.warn("API request failed, using mock data");
-        reviewData = generateMockResult();
+        // API failed - show real error to user
+        const errorBody = await response.text().catch(() => "");
+        console.error("API request failed:", response.status, errorBody);
+        throw new Error(`服务器错误 (${response.status}): ${errorBody || response.statusText}`);
       } else {
         const json = await response.json();
         if (json.success && json.data) {
           reviewData = json.data;
         } else {
-          reviewData = generateMockResult();
+          throw new Error(json.error || "服务器返回数据格式异常");
         }
       }
 
@@ -470,18 +471,16 @@ function ReviewTab() {
 
       // Navigate directly to report page
       router.push("/report");
-    } catch (err) {
+    } catch (err: any) {
       console.error("Review error:", err);
-      // Use mock data on error
-      const mockResult = generateMockResult();
-      sessionStorage.setItem("reviewResult", JSON.stringify(mockResult));
-      sessionStorage.setItem("reviewTaskInfo", JSON.stringify({ description, goals: goals.filter(g => g.trim()) }));
-      sessionStorage.setItem("reviewImages", JSON.stringify(images.map(img => ({
-        url: img.url,
-        stateDesc: img.stateDesc || "默认展示",
-      }))));
-      saveHistoryRecord(description || "未命名审查任务", "review", mockResult.overallScore, mockResult);
-      router.push("/report");
+      // Show actual error instead of silently using mock data
+      if (err?.name === "AbortError") {
+        alert("审查请求超时（图片较大或网络较慢），请稍后重试或减少图片数量");
+      } else {
+        alert(`审查失败: ${err?.message || "未知错误"}\n\n请检查网络连接后重试`);
+      }
+    } finally {
+      setIsReviewing(false);
     }
   };
 
@@ -679,49 +678,45 @@ function ReviewTab() {
 }
 
 /* ============================================================
-   Compare Tab
+   Compare Tab — 每方案只上传1张图进行对比
    ============================================================ */
 function CompareTab() {
   const fileInputRefA = useRef<HTMLInputElement>(null);
   const fileInputRefB = useRef<HTMLInputElement>(null);
+  const router = useRouter();
 
-  const [imagesA, setImagesA] = useState<UploadedImage[]>([]);
-  const [imagesB, setImagesB] = useState<UploadedImage[]>([]);
+  const [imageA, setImageA] = useState<UploadedImage | null>(null);
+  const [imageB, setImageB] = useState<UploadedImage | null>(null);
   const [description, setDescription] = useState("");
   const [goals, setGoals] = useState<string[]>([""]);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
 
-  const handleUpload = (
+  // 每方案只允许上传1张图
+  const handleSingleUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
     version: "A" | "B"
   ) => {
     const files = e.target.files;
-    if (files) {
-      const targetState = version === "A" ? imagesA : imagesB;
-      const setter = version === "A" ? setImagesA : setImagesB;
-      const newImages = Array.from(files)
-        .slice(0, 9 - targetState.length)
-        .map((file) => ({
-          id: Math.random().toString(36).substr(2, 9),
-          url: URL.createObjectURL(file),
-          stateDesc: "",
-          file,
-        }));
-      setter((prev) => [...prev, ...newImages]);
+    if (files && files.length > 0) {
+      const file = files[0];
+      const setter = version === "A" ? setImageA : setImageB;
+      setter({
+        id: Math.random().toString(36).substr(2, 9),
+        url: URL.createObjectURL(file),
+        stateDesc: "",
+        file,
+      });
     }
   };
 
-  const removeImage = (id: string, version: "A" | "B") => {
-    const setter = version === "A" ? setImagesA : setImagesB;
-    setter((prev) => prev.filter((img) => img.id !== id));
+  const removeImage = (version: "A" | "B") => {
+    if (version === "A") setImageA(null); else setImageB(null);
   };
 
-  const updateStateDesc = (id: string, val: string, version: "A" | "B") => {
-    const setter = version === "A" ? setImagesA : setImagesB;
-    setter((prev) =>
-      prev.map((img) => (img.id === id ? { ...img, stateDesc: val } : img))
-    );
+  const updateStateDesc = (val: string, version: "A" | "B") => {
+    if (version === "A") setImageA(prev => prev ? { ...prev, stateDesc: val } : null);
+    else setImageB(prev => prev ? { ...prev, stateDesc: val } : null);
   };
 
   const addGoal = () => setGoals([...goals, ""]);
@@ -738,14 +733,13 @@ function CompareTab() {
   };
 
   const autoFillAI = async () => {
-    if (imagesA.length === 0 && imagesB.length === 0) {
+    if (!imageA && !imageB) {
       alert("请先上传设计稿。");
       return;
     }
     setIsAiLoading(true);
     try {
-      // 合并两组图片一起推断
-      const allImages = [...imagesA, ...imagesB];
+      const allImages = [imageA, imageB].filter(Boolean) as UploadedImage[];
       const imageData = await Promise.all(
         allImages.map(async (img) => ({
           data: await fileToBase64(img.file),
@@ -769,13 +763,6 @@ function CompareTab() {
       if (json.success && json.data) {
         setDescription(json.data.functionName);
         setGoals(json.data.goals.length > 0 ? json.data.goals : [""]);
-        const autofillImages = (imgs: UploadedImage[], offset: number) =>
-          imgs.map((img, i) => ({
-            ...img,
-            stateDesc: json.data.imageStates[i + offset] || img.stateDesc || (i === 0 ? "默认状态 (首页展示)" : "交互状态"),
-          }));
-        setImagesA(autofillImages(imagesA, 0));
-        setImagesB(autofillImages(imagesB, imagesA.length));
       } else {
         alert(json.error || "AI推断失败，请重试");
       }
@@ -787,24 +774,90 @@ function CompareTab() {
     }
   };
 
-  const startCompare = () => {
-    if (imagesA.length === 0 || imagesB.length === 0) {
+  // 真正调用对比API并跳转报告页
+  const startCompare = async () => {
+    if (!imageA || !imageB) {
       alert("请确保版本A和版本B都上传了设计稿进行对比。");
       return;
     }
     setIsComparing(true);
-    setTimeout(() => {
-      window.location.href = `/compare?task=${Date.now()}`;
-    }, 2000);
+
+    try {
+      const v1Data = { data: await fileToBase64(imageA.file), name: imageA.file.name, state: imageA.stateDesc || "默认展示" };
+      const v2Data = { data: await fileToBase64(imageB.file), name: imageB.file.name, state: imageB.stateDesc || "默认展示" };
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      let response: Response;
+      try {
+        response = await fetch("/api/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            v1Images: [v1Data],
+            v2Images: [v2Data],
+            taskName: description || "未命名对比任务",
+            description,
+            goals: goals.filter(g => g.trim()),
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => "");
+        throw new Error(`服务器错误 (${response.status}): ${errorBody || response.statusText}`);
+      }
+
+      const json = await response.json();
+      if (!json.success || !json.data) throw new Error(json.error || "服务器返回数据格式异常");
+
+      const compareResult = json.data;
+
+      // 存储到sessionStorage供对比报告页使用
+      sessionStorage.setItem("compareResult", JSON.stringify(compareResult));
+      sessionStorage.setItem("compareTaskInfo", JSON.stringify({ description, goals: goals.filter(g => g.trim()) }));
+      sessionStorage.setItem("compareImages", JSON.stringify([
+        { url: imageA.url, stateDesc: imageA.stateDesc || "默认展示" },
+        { url: imageB.url, stateDesc: imageB.stateDesc || "默认展示" },
+      ]));
+
+      saveHistoryRecord(description || "未命名对比任务", "compare",
+        Math.max(compareResult.v1Review.overallScore, compareResult.v2Review.overallScore), compareResult);
+
+      router.push("/compare");
+    } catch (err: any) {
+      console.error("Compare error:", err);
+      if (err?.name === "AbortError") {
+        alert("对比请求超时（图片较大或网络较慢），请稍后重试");
+      } else {
+        alert(`对比失败: ${err?.message || "未知错误"}\n\n请检查网络连接后重试`);
+      }
+    } finally {
+      setIsComparing(false);
+    }
   };
 
-  const UploadGrid = ({
+  /* 单图上传卡片（含状态编辑） */
+  const SingleImageCard = ({
     version,
-    images,
+    image,
+    onUpdateState,
   }: {
     version: "A" | "B";
-    images: UploadedImage[];
-  }) => (
+    image: UploadedImage | null;
+    onUpdateState?: (val: string) => void;
+  }) => {
+    const [localState, setLocalState] = useState(image?.stateDesc || "");
+    
+    // 同步外部状态到本地（仅在image引用变化时）
+    useEffect(() => {
+      if (image) setLocalState(image.stateDesc);
+    }, [image?.id, image?.stateDesc]);
+
+    return (
     <div className="flex-1 space-y-4">
       <div className="flex justify-between items-center mb-3">
         <h3 className="text-base font-semibold text-slate-200 flex items-center gap-2">
@@ -814,80 +867,78 @@ function CompareTab() {
           <span>版本 {version}</span>
         </h3>
         <span className="text-xs px-2.5 py-1 rounded-md bg-white/5 text-slate-400 font-mono border border-white/[0.05]">
-          {images.length} / 9
+          {image ? "1 / 1" : "0 / 1"}
         </span>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        {images.map((img) => (
-          <div
-            key={img.id}
-            className="relative group flex flex-col gap-2 p-2.5 border border-white/[0.06] rounded-2xl bg-black/20 hover:bg-black/30 transition-colors"
-          >
-            <div className="aspect-video relative rounded-xl overflow-hidden bg-[#0f172a] group-hover:ring-1 ring-indigo-500/50 transition-all">
-              <img
-                src={img.url}
-                alt={`Version ${version}`}
-                className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-              />
-              <button
-                onClick={() => removeImage(img.id, version)}
-                className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-900/80 text-slate-400 hover:text-white hover:bg-red-500/90 opacity-0 group-hover:opacity-100 transition-all backdrop-blur-sm shadow-lg"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <input
-              type="text"
-              value={img.stateDesc}
-              onChange={(e) =>
-                updateStateDesc(img.id, e.target.value, version)
-              }
-              placeholder="所属状态 (默认/点击)"
-              className="w-full bg-black/30 border border-white/5 rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50"
-            />
+      {!image ? (
+        <button
+          onClick={() =>
+            version === "A"
+              ? fileInputRefA.current?.click()
+              : fileInputRefB.current?.click()
+          }
+          className="aspect-video w-full flex flex-col items-center justify-center gap-3 border border-dashed border-white/20 rounded-2xl bg-white/[0.02] hover:bg-indigo-500/10 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/40 transition-all duration-300"
+        >
+          <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center">
+            <Upload className="w-5 h-5 opacity-80" />
           </div>
-        ))}
+          <span className="text-sm font-medium">点击上传版本{version}图片</span>
+          <span className="text-[11px] text-slate-500">单张图片对比模式</span>
+        </button>
+      ) : (
+        <div className="relative group rounded-2xl border border-white/[0.06] bg-black/20 overflow-hidden">
+          <div className="aspect-video relative overflow-hidden bg-[#0f172a] group-hover:ring-1 ring-indigo-500/50 transition-all">
+            <img
+              src={image.url}
+              alt={`Version ${version}`}
+              className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity"
+            />
+            <button
+              onClick={() => removeImage(version)}
+              className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-900/80 text-slate-400 hover:text-white hover:bg-red-500/90 opacity-0 group-hover:opacity-100 transition-all backdrop-blur-sm shadow-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          {/* 可编辑的状态描述 - 使用本地state避免输入中断 */}
+          <input
+            type="text"
+            value={localState}
+            onChange={(e) => {
+              setLocalState(e.target.value);
+              onUpdateState?.(e.target.value);
+            }}
+            onBlur={(e) => onUpdateState?.(e.target.value)}
+            placeholder="描述所属状态 (例如: 默认态)"
+            className="w-full bg-black/30 border border-white/5 rounded-b-xl px-3 py-2 text-sm text-slate-300 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50 transition-all"
+          />
+        </div>
+      )}
 
-        {images.length < 9 && (
-          <button
-            onClick={() =>
-              version === "A"
-                ? fileInputRefA.current?.click()
-                : fileInputRefB.current?.click()
-            }
-            className="aspect-video flex flex-col items-center justify-center gap-2 border border-dashed border-white/20 rounded-2xl bg-white/[0.02] hover:bg-indigo-500/10 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/40 transition-all duration-300"
-          >
-            <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center mb-1">
-              <Upload className="w-4 h-4 opacity-80" />
-            </div>
-            <span className="text-xs font-medium">点击上传 ({version})</span>
-          </button>
-        )}
-      </div>
       <input
         type="file"
-        multiple
         accept="image/*"
         className="hidden"
         ref={version === "A" ? fileInputRefA : fileInputRefB}
-        onChange={(e) => handleUpload(e, version)}
+        onChange={(e) => handleSingleUpload(e, version)}
       />
     </div>
   );
+  };
 
   return (
     <div className="flex flex-col xl:flex-row gap-10 items-stretch w-full">
       {/* Upload Areas */}
       <div className="flex-1 flex flex-col md:flex-row gap-8">
-        <UploadGrid version="A" images={imagesA} />
+        <SingleImageCard version="A" image={imageA} onUpdateState={(val) => updateStateDesc(val, "A")} />
         {/* Divider with VS */}
-        <div className="hidden md:flex flex-col items-center justify-center -mx-4 z-10 pt-10">
+        <div className="hidden md:flex flex-col items-center justify-center -mx-4 z-10 pt-16">
           <div className="w-12 h-12 rounded-full bg-[#0a0f18] border-2 border-white/10 text-slate-400 font-bold flex items-center justify-center text-sm shadow-xl tracking-wider">
             VS
           </div>
         </div>
-        <UploadGrid version="B" images={imagesB} />
+        <SingleImageCard version="B" image={imageB} onUpdateState={(val) => updateStateDesc(val, "B")} />
       </div>
 
       {/* Settings */}

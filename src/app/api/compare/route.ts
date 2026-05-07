@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { performComparison } from "@/lib/gemini";
 
+// Vercel: 增加Serverless Function最大执行时间到120秒（Pro版上限）
+export const maxDuration = 120;
+
 export async function POST(req: NextRequest) {
   try {
     const contentLength = req.headers.get("content-length") || "unknown";
