@@ -27,13 +27,57 @@ import { runUserEvaluations } from "@/lib/user-evaluation";
 /* ============================================================
    Session storage for passing review data to report page
    ============================================================ */
-function fileToBase64(file: File): Promise<string> {
+
+/**
+ * 压缩图片：缩小尺寸 + JPEG 压缩
+ * 大图（>1MB）压缩到 ~300-500KB，减少 API payload 和 429 风险
+ */
+async function compressAndEncode(file: File, maxWidth = 1920, quality = 0.75): Promise<string> {
+  const originalSizeKB = file.size / 1024;
+
+  // 小文件（<200KB）不压缩，直接返回 base64
+  if (originalSizeKB < 200) {
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // 大文件走 canvas 压缩
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxWidth) {
+        height = Math.round((height * maxWidth) / width);
+        width = maxWidth;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { /* fallback */ }
+      else { ctx.drawImage(img, 0, 0, width, height); }
+      const result = canvas.toDataURL("image/jpeg", quality);
+      const compressedKB = (atob(result.split(",")[1]).length) / 1024;
+      console.log(`[Compress] ${file.name}: ${Math.round(originalSizeKB)}KB → ${Math.round(compressedKB)}KB (${Math.round((1 - compressedKB / originalSizeKB) * 100)}%↓)`);
+      resolve(result);
+    };
+    img.onerror = () => {
+      console.warn(`[Compress] ${file.name} 加载失败，使用原始文件`);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    };
+    img.src = URL.createObjectURL(file);
   });
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return compressAndEncode(file);
 }
 
 /* ============================================================
@@ -494,11 +538,13 @@ function ReviewTab() {
       router.push("/report");
     } catch (err: any) {
       console.error("Review error:", err);
-      // Show actual error instead of silently using mock data
+      const errMsg = err?.message || "未知错误";
       if (err?.name === "AbortError") {
         alert("审查请求超时（图片较大或网络较慢），请稍后重试或减少图片数量");
+      } else if (errMsg.includes("429") || errMsg.includes("速率限制") || errMsg.includes("频率")) {
+        alert(`API 限流中，请稍等片刻再试\n\n提示：可尝试减少上传图片数量（建议3张以内）以降低请求压力`);
       } else {
-        alert(`审查失败: ${err?.message || "未知错误"}\n\n请检查网络连接后重试`);
+        alert(`审查失败: ${errMsg}\n\n请检查网络连接后重试`);
       }
     } finally {
       setIsReviewing(false);
@@ -880,10 +926,13 @@ function CompareTab() {
       router.push("/compare");
     } catch (err: any) {
       console.error("Compare error:", err);
+      const errMsg = err?.message || "未知错误";
       if (err?.name === "AbortError") {
         alert("对比请求超时（图片较大或网络较慢），请稍后重试");
+      } else if (errMsg.includes("429") || errMsg.includes("速率限制") || errMsg.includes("频率")) {
+        alert(`API 限流中，请稍等片刻再试\n\n提示：可尝试减少图片大小后再提交`);
       } else {
-        alert(`对比失败: ${err?.message || "未知错误"}\n\n请检查网络连接后重试`);
+        alert(`对比失败: ${errMsg}\n\n请检查网络连接后重试`);
       }
     } finally {
       setIsComparing(false);

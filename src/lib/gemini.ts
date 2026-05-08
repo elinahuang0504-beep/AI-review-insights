@@ -163,20 +163,38 @@ const COMPARE_SYSTEM_PROMPT =
 
 /* ============================================================
    Retry utility with exponential backoff for rate limiting
+   - 429: 指数退避，最长等30秒
+   - 5xx: 标准重试
+   - 其他错误: 直接抛出
    ============================================================ */
+
+function isRateLimitError(error: any): boolean {
+  // OpenAI SDK 格式
+  if (error?.status === 429) return true;
+  // 智谱API 返回格式（可能嵌套在 error.error 中）
+  const msg = error?.message || "";
+  const errBody = error?.error;
+  if (typeof errBody === "object" && (errBody?.code === 429 || errBody?.status === 429)) return true;
+  if (msg.includes("429") || msg.includes("速率限制") || msg.includes("rate") || msg.includes("频率")) return true;
+  return false;
+}
 
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error: any) {
-      const isRateLimited =
-        error?.status === 429 ||
-        (error?.message?.includes("400") && error?.message?.includes("参数"));
-      if (attempt < maxRetries && isRateLimited) {
-        const delayMs = Math.pow(2, attempt + 1) * 1000;
-        console.warn(`API rate limited, retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+      if (isRateLimitError(error) && attempt < maxRetries) {
+        // 429 用更长的退避：5s → 15s → 30s
+        const delayMs = [5000, 15000, 30000][attempt] ?? 30000;
+        console.warn(`[Retry] API 429 限流，${delayMs / 1000}s 后重试 (${attempt + 1}/${maxRetries})`);
         await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      // 5xx 可重试一次
+      if ((error?.status >= 500 && error?.status < 600) && attempt < 1) {
+        console.warn(`[Retry] Server ${error.status}，3s后重试`);
+        await new Promise(r => setTimeout(r, 3000));
         continue;
       }
       throw error;
@@ -223,13 +241,77 @@ type ImageContentPart = {
   image_url: { url: string };
 };
 
+/**
+ * 压缩图片 base64 — 缩小尺寸 + 降低质量
+ * 目标：将大图（>2MB）压缩到 ~500KB 以内
+ */
+async function compressImageBase64(
+  dataUrl: string,
+  maxWidth = 1920,
+  quality = 0.75
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      // 等比缩放
+      if (width > maxWidth) {
+        height = Math.round((height * maxWidth) / width);
+        width = maxWidth;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(dataUrl); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) { resolve(dataUrl); return; }
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => resolve(dataUrl);
+          reader.readAsDataURL(blob);
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * 服务端版：估算并裁剪 base64 图片大小提示
+ * 返回原始大小信息供日志记录
+ */
+function getImageInfo(data: string): { sizeBytes: number; sizeKB: number; mime: string } {
+  const headerEnd = data.indexOf(",");
+  if (headerEnd < 0) return { sizeBytes: 0, sizeKB: 0, mime: "unknown" };
+  const header = data.slice(0, headerEnd);
+  const body = data.slice(headerEnd + 1);
+  const mimeMatch = header.match(/data:(.+?);base64/);
+  return {
+    sizeBytes: (body.length * 3) / 4,
+    sizeKB: Math.round(((body.length * 3) / 4) / 1024),
+    mime: mimeMatch?.[1] || "unknown",
+  };
+}
+
 function prepareImageContents(images: { data: string; name: string; state: string }[]): ImageContentPart[] {
-  return images.map(img => ({
-    type: "image_url" as const,
-    image_url: {
-      url: img.data.startsWith('data:') ? img.data : `data:${img.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'};base64,${img.data}`,
-    },
-  }));
+  return images.map((img, idx) => {
+    const info = getImageInfo(img.data);
+    if (info.sizeKB > 500) {
+      console.warn(`[Image ${idx + 1}] ${img.name} 较大 (${info.sizeKB}KB)，建议前端压缩后上传`);
+    }
+    return {
+      type: "image_url" as const,
+      image_url: {
+        url: img.data.startsWith('data:') ? img.data : `data:${img.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'};base64,${img.data}`,
+      },
+    };
+  });
 }
 
 /**
