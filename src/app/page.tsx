@@ -17,9 +17,12 @@ import {
   Plus,
   Minus,
   User,
+  Users,
+  ChevronDown,
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { runUserEvaluations } from "@/lib/user-evaluation";
 
 /* ============================================================
    Session storage for passing review data to report page
@@ -201,7 +204,7 @@ export default function HomePage() {
       <div className="relative z-10 w-full flex flex-col items-center justify-center pt-32 pb-24 px-6">
         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-medium mb-8 backdrop-blur-md">
           <Sparkles className="w-3.5 h-3.5" />
-          <span>AI辅助设计审查工具全新上线</span>
+          <span>AI 体验走查工具</span>
         </div>
 
         <div className="flex items-center justify-center mb-4">
@@ -210,7 +213,7 @@ export default function HomePage() {
           <div className="w-3 h-3 md:w-4 md:h-4 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 ml-2 mb-4 md:mb-6"></div>
         </div>
         <p className="text-lg md:text-xl text-slate-300 max-w-2xl mx-auto font-medium text-center drop-shadow leading-relaxed">
-          首款专为车载 HMI 打造的 AI 设计评估工具，从美学到人机工程，为您提供专家级的深度分析与多方案对标体验。
+          专为车载 HMI 打造的 AI 体验走查工具，融合视觉大模型与设计准则，秒级输出专家级诊断报告，告别主观争议，让设计评审提效80%
         </p>
       </div>
 
@@ -223,7 +226,7 @@ export default function HomePage() {
             </div>
             <h3 className="text-lg font-semibold text-slate-200 mb-2">多维度智能审查</h3>
             <p className="text-sm text-slate-400 leading-relaxed">
-              结合最新大模型能力，深度分析HMI设计中的人机交互、视觉美学与安全合规隐患。
+              依托多模态大模型，一键透视设计稿。从交互逻辑、色彩对比度到 NHTSA 驾驶安全规范，全方位排查隐蔽缺陷
             </p>
           </div>
 
@@ -231,9 +234,9 @@ export default function HomePage() {
             <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
               <Layers className="w-5 h-5 text-blue-400" />
             </div>
-            <h3 className="text-lg font-semibold text-slate-200 mb-2">双方案深度横评</h3>
+            <h3 className="text-lg font-semibold text-slate-200 mb-2">单 / 双方案深度横评</h3>
             <p className="text-sm text-slate-400 leading-relaxed">
-              支持深浅模式或多版本设计并行对比，直观呈现优劣势数据差异，推荐最优解。
+              支持单方案专业评估或多方案深度对比。AI 快速定位关键差异，终结团队「选型内耗」，辅助快速决策
             </p>
           </div>
 
@@ -243,17 +246,17 @@ export default function HomePage() {
             </div>
             <h3 className="text-lg font-semibold text-slate-200 mb-2">量化评估体系</h3>
             <p className="text-sm text-slate-400 leading-relaxed">
-              将界面元素打散，通过计算元素数量、对齐方式、颜色数量等，得出一个美学评分或复杂度评分。
+              八大评估维度将抽象的美学与可用性，转化为极具说服力的客观指标
             </p>
           </div>
 
           <div className="bg-white/[0.03] hover:bg-white/[0.05] border border-white/[0.05] rounded-2xl p-6 backdrop-blur-xl transition-all duration-300 group">
             <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-              <FileDown className="w-5 h-5 text-emerald-400" />
+              <Users className="w-5 h-5 text-emerald-400" />
             </div>
-            <h3 className="text-lg font-semibold text-slate-200 mb-2">一键专业报告导出</h3>
+            <h3 className="text-lg font-semibold text-slate-200 mb-2">多元虚拟用户数据库</h3>
             <p className="text-sm text-slate-400 leading-relaxed">
-              自动生成专业级评审详尽报告，支持导出PDF/Word格式，无缝衔接团队工作流。
+              将过往调研输入转化为海量用户角色，快速模拟真实用户的交互探索链路，提炼并输出高价值的主观体验观点
             </p>
           </div>
         </div>
@@ -314,6 +317,10 @@ function ReviewTab() {
   const [scene, setScene] = useState<"parked" | "driving">("driving");
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isReviewing, setIsReviewing] = useState(false);
+
+  // ---- 用户评测状态 ----
+  const [userEvalEnabled, setUserEvalEnabled] = useState(false);
+  const [userEvalSampleSize, setUserEvalSampleSize] = useState(5);
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -465,6 +472,20 @@ function ReviewTab() {
         url: img.url,
         stateDesc: img.stateDesc || "默认展示",
       }))));
+
+      // 用户评测（PRD v1.1）
+      if (userEvalEnabled) {
+        try {
+          const taskInfo = { taskName: description || "未命名审查任务", description, goals: goals.filter(g => g.trim()) };
+          const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
+          if (userEvalResult) {
+            sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
+          }
+        } catch (evalErr) {
+          console.warn("用户评测失败，报告将不包含评测数据:", evalErr);
+          sessionStorage.removeItem("userEvaluationSummary");
+        }
+      }
 
       // Persist history record to localStorage (with full data for later viewing)
       saveHistoryRecord(description || "未命名审查任务", "review", reviewData.overallScore, reviewData);
@@ -650,6 +671,14 @@ function ReviewTab() {
               </div>
             </div>
 
+            {/* ===== 用户评测配置区（PRD v1.1）===== */}
+            <UserEvalConfigPanel
+              enabled={userEvalEnabled}
+              onEnabledChange={setUserEvalEnabled}
+              sampleSize={userEvalSampleSize}
+              onSampleSizeChange={setUserEvalSampleSize}
+            />
+
             <div className="pt-5 border-t border-white/[0.06]">
               <button
                 onClick={startReview}
@@ -659,12 +688,15 @@ function ReviewTab() {
                 {isReviewing ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>正在深度分析...</span>
+                    <span>{userEvalEnabled ? "正在分析（专家审查 + 用户评测）..." : "正在深度分析..."}</span>
                   </>
                 ) : (
                   <>
                     <Bot className="w-5 h-5" />
                     <span>确认并开始审查</span>
+                    {userEvalEnabled && (
+                      <span className="ml-1 text-xs opacity-75">+ 用户评测({userEvalSampleSize}人)</span>
+                    )}
                   </>
                 )}
                 <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent pointer-events-none" />
@@ -691,6 +723,10 @@ function CompareTab() {
   const [goals, setGoals] = useState<string[]>([""]);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
+
+  // ---- 用户评测状态（对比模式） ----
+  const [userEvalEnabled, setUserEvalEnabled] = useState(false);
+  const [userEvalSampleSize, setUserEvalSampleSize] = useState(5);
 
   // 每方案只允许上传1张图
   const handleSingleUpload = (
@@ -823,6 +859,20 @@ function CompareTab() {
         { url: imageA.url, stateDesc: imageA.stateDesc || "默认展示" },
         { url: imageB.url, stateDesc: imageB.stateDesc || "默认展示" },
       ]));
+
+      // 用户评测（PRD v1.1）
+      if (userEvalEnabled) {
+        try {
+          const taskInfo = { taskName: description || "未命名对比任务", description, goals: goals.filter(g => g.trim()) };
+          const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
+          if (userEvalResult) {
+            sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
+          }
+        } catch (evalErr) {
+          console.warn("用户评测失败，对比报告将不包含评测数据:", evalErr);
+          sessionStorage.removeItem("userEvaluationSummary");
+        }
+      }
 
       saveHistoryRecord(description || "未命名对比任务", "compare",
         Math.max(compareResult.v1Review.overallScore, compareResult.v2Review.overallScore), compareResult);
@@ -1010,6 +1060,14 @@ function CompareTab() {
               </div>
             </div>
 
+            {/* ===== 用户评测配置区（PRD v1.1 - 对比模式）===== */}
+            <UserEvalConfigPanel
+              enabled={userEvalEnabled}
+              onEnabledChange={setUserEvalEnabled}
+              sampleSize={userEvalSampleSize}
+              onSampleSizeChange={setUserEvalSampleSize}
+            />
+
             <div className="pt-5 border-t border-white/[0.06]">
               <button
                 onClick={startCompare}
@@ -1019,12 +1077,15 @@ function CompareTab() {
                 {isComparing ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>正在深度对比...</span>
+                    <span>{userEvalEnabled ? "正在分析（专家对比 + 用户评测）..." : "正在深度对比..."}</span>
                   </>
                 ) : (
                   <>
                     <GitCompare className="w-5 h-5" />
                     <span>确认并对比版本</span>
+                    {userEvalEnabled && (
+                      <span className="ml-1 text-xs opacity-75">+ 用户评测({userEvalSampleSize}人)</span>
+                    )}
                   </>
                 )}
                 <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent pointer-events-none" />
@@ -1082,4 +1143,124 @@ function generateMockResult() {
       },
     ],
   };
+}
+
+/* ============================================================
+   UserEvalConfigPanel — 用户评测配置区（PRD v1.1）
+   ============================================================ */
+function UserEvalConfigPanel({
+  enabled,
+  onEnabledChange,
+  sampleSize,
+  onSampleSizeChange,
+}: {
+  enabled: boolean;
+  onEnabledChange: (v: boolean) => void;
+  sampleSize: number;
+  onSampleSizeChange: (v: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  // 检查用户库是否有可用数据
+  const [personaCount, setPersonaCount] = useState(0);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("virtualUserLibrary");
+      if (raw) setPersonaCount(JSON.parse(raw).length);
+    } catch {}
+  }, []);
+
+  return (
+    <div className="mt-5 rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+      {/* 折叠标题 */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition-colors cursor-pointer"
+      >
+        <div className="flex items-center gap-2.5">
+          <Users className="w-[18px] h-[18px] text-indigo-400" />
+          <span className="text-sm font-medium text-slate-300">用户评测（可选）</span>
+          {enabled && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-medium">
+              已启用 · {sampleSize}人
+            </span>
+          )}
+        </div>
+        <ChevronDown
+          className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 border-t border-white/[0.06] pt-3">
+          {/* 启用单选：是否开启用户评测 */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium text-slate-200">是否启用虚拟车主用户评测</span>
+            <p className="text-xs text-slate-500">
+              AI将以虚拟车主视角模拟使用过程，评估目标达成率
+              {personaCount > 0 && `（当前用户库共${personaCount}位车主）`}
+              {personaCount === 0 && "（请先在「个人中心→虚拟用户库」中添加车主）"}
+            </p>
+            <div className="flex items-center gap-6 mt-2">
+              <label className={`flex items-center gap-2 cursor-pointer group ${!enabled ? "" : "opacity-50"}`}>
+                <div
+                  onClick={() => onEnabledChange(false)}
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all ${
+                    !enabled ? "border-indigo-500 bg-indigo-500" : "border-white/20 bg-transparent"
+                  }`}
+                >
+                  {!enabled && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </div>
+                <span className={`text-sm ${!enabled ? "text-slate-200 font-medium" : "text-slate-400"}`}>不启用</span>
+              </label>
+              <label className={`flex items-center gap-2 cursor-pointer group ${enabled ? "" : "opacity-50"}`}>
+                <div
+                  onClick={() => onEnabledChange(true)}
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all ${
+                    enabled ? "border-indigo-500 bg-indigo-500" : "border-white/20 bg-transparent"
+                  }`}
+                >
+                  {enabled && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </div>
+                <span className={`text-sm ${enabled ? "text-slate-200 font-medium" : "text-slate-400"}`}>启用</span>
+              </label>
+            </div>
+          </div>
+
+          {enabled && (
+            <>
+              {/* 样本量选择 */}
+              <div>
+                <label className="text-xs font-medium text-slate-400 mb-1.5 block">
+                  评测样本量：{sampleSize} 位车主
+                </label>
+                <input
+                  type="range"
+                  min={1}
+                  max={50}
+                  value={sampleSize}
+                  onChange={(e) => onSampleSizeChange(Number(e.target.value))}
+                  className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500 [&::-webkit-slider-thumb]:shadow-md"
+                />
+                <div className="flex justify-between mt-1 text-xs text-slate-600">
+                  <span>1人</span>
+                  <span>50人</span>
+                </div>
+              </div>
+
+              {/* 预估耗时提示 */}
+              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-indigo-500/[0.06] border border-indigo-500/15">
+                <Zap className="w-3.5 h-3.5 text-indigo-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-indigo-300/80 leading-relaxed">
+                  预计额外增加约{" "}
+                  <strong>{Math.round(sampleSize * 12 * 0.8)}-{Math.round(sampleSize * 12 * 1.2)}秒</strong>{" "}
+                  处理时间。每个虚拟车主将独立完成目标达成率评测，结果将在报告中以独立区块展示。
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

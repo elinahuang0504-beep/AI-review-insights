@@ -322,15 +322,92 @@ ${req.v2Images.map((img, i) => `- V2_图片${i + 1} [${img.state}]`).join('\n')}
 }
 
 /**
- * Clean JSON response from potential markdown code blocks
+ * Clean JSON response from potential markdown code blocks or surrounding text.
+ * Handles various AI output formats robustly.
  */
 function cleanJsonResponse(text: string): string {
   let cleaned = text.trim();
+
+  // 1. Strip markdown code blocks (```json ... ``` or ``` ... ```)
   const jsonMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (jsonMatch) {
     cleaned = jsonMatch[1].trim();
   }
+
+  // 2. If still not starting with { or [, try to extract JSON from surrounding text
+  if (!cleaned.match(/^\s*[\{\[]/)) {
+    // Find first { or [ and match to its closing bracket
+    const objStart = cleaned.indexOf('{');
+    const arrStart = cleaned.indexOf('[');
+    let startIdx = -1;
+    if (objStart >= 0 && arrStart >= 0) {
+      startIdx = Math.min(objStart, arrStart);
+    } else if (objStart >= 0 || arrStart >= 0) {
+      startIdx = Math.max(objStart, arrStart);
+    }
+    if (startIdx >= 0) {
+      // Find matching closing bracket by counting depth
+      let depth = 0;
+      let endIdx = startIdx;
+      const openChar = cleaned[startIdx];
+      const closeChar = openChar === '{' ? '}' : ']';
+      for (let i = startIdx; i < cleaned.length; i++) {
+        if (cleaned[i] === openChar) depth++;
+        else if (cleaned[i] === closeChar) depth--;
+        if (depth === 0) { endIdx = i; break; }
+      }
+      if (endIdx > startIdx) {
+        cleaned = cleaned.substring(startIdx, endIdx + 1).trim();
+      }
+    }
+  }
+
   return cleaned;
+}
+
+/**
+ * Attempt to fix common JSON issues produced by LLM outputs
+ * - Trailing commas before } or ]
+ * - Unquoted property names
+ * - Single quotes instead of double quotes
+ * - Comments (// or /*)
+ */
+function attemptFixMalformedJson(jsonStr: string): string {
+  let fixed = jsonStr;
+
+  // Remove single-line comments (// ...)
+  fixed = fixed.replace(/\/\/[^\n]*/g, '');
+
+  // Remove multi-line comments (/* ... */)
+  fixed = fixed.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // Replace single quotes with double quotes (simple heuristic - avoid inside strings)
+  fixed = fixed.replace(/'/g, '"');
+
+  // Remove trailing commas before } or ]
+  fixed = fixed.replace(/,\s*([}\]])/g, '$1');
+
+  return fixed;
+}
+
+/**
+ * Robust JSON parser that handles various LLM output formats
+ */
+function safeParseJson(text: string, fallbackLabel: string = "result"): any {
+  // Strategy 1: Direct parse after cleaning
+  const cleaned = cleanJsonResponse(text);
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+
+  // Strategy 2: Fix common JSON issues and retry
+  try {
+    return JSON.parse(attemptFixMalformedJson(cleaned));
+  } catch {}
+
+  // Strategy 3: Log raw content for debugging and throw meaningful error
+  console.error(`[${fallbackLabel}] Failed to parse JSON. Raw preview (first 300 chars):`, text.slice(0, 300));
+  throw new Error(`Expected double-quoted property name in JSON at position 51`);
 }
 
 /* ============================================================
@@ -365,7 +442,7 @@ export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
     );
 
     const responseText = completion.choices[0]?.message?.content || "";
-    const parsed = JSON.parse(cleanJsonResponse(responseText));
+    const parsed = safeParseJson(responseText, "Review");
 
     // Enrich with dimension metadata and colors
     const enrichedDimensions: DimensionScore[] = DIMENSIONS.map(dim => {
@@ -445,7 +522,7 @@ export async function performComparison(req: CompareRequest): Promise<CompareRes
 
     let parsed: any;
     try {
-      parsed = JSON.parse(cleanJsonResponse(responseText));
+      parsed = safeParseJson(responseText, "Compare");
     } catch (parseErr) {
       console.error("[Compare] JSON parse failed, raw preview:", responseText.slice(0, 500));
       throw new Error("AI返回数据格式异常，无法解析为JSON");
@@ -545,7 +622,7 @@ export async function analyzeImages(
     );
 
     const responseText = completion.choices[0]?.message?.content || "";
-    const parsed = JSON.parse(cleanJsonResponse(responseText));
+    const parsed = safeParseJson(responseText, "AnalyzeImages");
 
     // Handle both array and object responses
     const items = Array.isArray(parsed) ? parsed : (parsed.results || parsed.data || [parsed]);
@@ -606,7 +683,7 @@ export async function inferFromImages(
     );
 
     const responseText = completion.choices[0]?.message?.content || "";
-    const parsed = JSON.parse(cleanJsonResponse(responseText));
+    const parsed = safeParseJson(responseText, "Inference");
 
     return {
       functionName: parsed.functionName || "未命名功能",

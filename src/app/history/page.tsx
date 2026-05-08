@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -26,7 +26,7 @@ import {
   loadPersonas,
   addPersona,
   updatePersona,
-  deletePersona as deletePersonaStorage,
+  deletePersonaStorage,
   type Persona,
 } from "@/lib/persona";
 
@@ -323,6 +323,179 @@ export default function PersonalCenterPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingPersona, setEditingPersona] = useState<Persona | null>(null);
 
+  /* ---- Persona Search & Filter (PRD v1.1) ---- */
+  const [personaSearch, setPersonaSearch] = useState("");
+  const [personaActiveFilter, setPersonaActiveFilter] = useState<string>("all");
+
+  // Dynamic filter tags from all personas
+  const personaFilterTags = (() => {
+    const tagSet = new Set<string>();
+    for (const p of personas) {
+      if (p.customTags) p.customTags.forEach((t) => tagSet.add(t));
+      if (p.techAffinity) tagSet.add(p.techAffinity);
+    }
+    return Array.from(tagSet).slice(0, 8); // Limit to 8 tags
+  })();
+
+  // Filtered personas
+  const filteredPersonas = useMemo(() => {
+    let result = personas;
+    // Text search
+    if (personaSearch.trim()) {
+      const q = personaSearch.toLowerCase();
+      result = result.filter((p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.customTags?.some((t) => t.toLowerCase().includes(q)) ||
+        p.occupation?.toLowerCase().includes(q) ||
+        p.narrative?.toLowerCase().includes(q)
+      );
+    }
+    // Tag filter
+    if (personaActiveFilter !== "all") {
+      result = result.filter((p) =>
+        p.customTags?.includes(personaActiveFilter) || p.techAffinity === personaActiveFilter
+      );
+    }
+    return result;
+  }, [personas, personaSearch, personaActiveFilter]);
+
+  /* ---- Batch Import ---- */
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const openBatchImport = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleBatchImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Check size limit (5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      alert("文件大小不能超过 5MB");
+      return;
+    }
+
+    const ext = file.name.split(".").pop()?.toLowerCase();
+
+    try {
+      let importedData: Array<Record<string, unknown>> = [];
+
+      if (ext === "xlsx" || ext === "xls" || ext === "csv") {
+        // Use xlsx-like parsing for CSV/Excel
+        importedData = await parseSpreadsheetFile(file);
+      } else if (ext === "docx") {
+        // Word document - for now show a message that mammoth is needed
+        alert("Word 文档解析需要安装额外依赖，建议使用 Excel 或 CSV 格式导入。");
+        return;
+      } else {
+        alert("不支持的文件格式，请使用 .xlsx / .xls / .csv 文件");
+        return;
+      }
+
+      if (importedData.length > 0) {
+        const mapped = importedData.map((row: Record<string, unknown>) => ({
+          name: String(row["姓名"] || row["name"] || ""),
+          age: row["年龄"] ? Number(row["年龄"]) : undefined,
+          gender: (row["性别"] as string) || undefined,
+          occupation: (row["职业"] || row["occupation"] as string) || undefined,
+          cityTier: (row["城市级别"] || row["city_tier"] as string) || undefined,
+          drivingExperience: (row["驾龄"] || row["driving_experience"] as string) || undefined,
+          carOwnership: (row["购车经历"] || row["car_ownership"] as string) || undefined,
+          incomeLevel: (row["收入水平"] || row["income_level"] as string) || undefined,
+          familyStatus: (row["家庭状况"] || row["family_status"] as string) || undefined,
+          techAffinity: (row["科技偏好"] || row["tech_affinity"] as string) || undefined,
+          uiComplexityPref: (row["界面偏好"] || row["ui_complexity_pref"] as string) || undefined,
+          safetyPriority: (row["安全重视度"] || row["safety_priority"] as string) || undefined,
+          learningWillingness: (row["学习意愿"] || row["learning_willingness"] as string) || undefined,
+          distractionTolerance: (row["干扰容忍度"] || row["distraction_tolerance"] as string) || undefined,
+          brandLoyalty: (row["品牌忠诚度"] || row["brand_loyalty"] as string) || undefined,
+          customTags: typeof row["自定义标签"] === "string"
+            ? (row["自定义标签"] as string).split(",").map((s) => s.trim()).filter(Boolean)
+            : Array.isArray(row["custom_tags"])
+              ? row["custom_tags"].map(String)
+              : [],
+          drivingScenario: typeof row["用车场景"] === "string"
+            ? (row["用车场景"] as string).split(",").map((s) => s.trim()).filter(Boolean)
+            : [],
+          featurePriority: typeof row["高频功能"] === "string"
+            ? (row["高频功能"] as string).split(",").map((s) => s.trim()).filter(Boolean)
+            : [],
+          accessibilityNeeds: typeof row["特殊需求"] === "string"
+            ? (row["特殊需求"] as string).split(",").map((s) => s.trim()).filter(Boolean)
+            : [],
+          narrative: (row["画像描述"] || row["narrative"] as string) || "",
+        }));
+
+        const { success } = batchAddPersonas(mapped.filter((d) => d.name));
+        setPersonas(loadPersonas());
+        alert(`导入完成：成功 ${success} 条${mapped.length !== success ? `，失败 ${mapped.length - success} 条` : ""}`);
+      }
+    } catch (err) {
+      console.error("Batch import error:", err);
+      alert("导入失败：" + (err instanceof Error ? err.message : "未知错误"));
+    }
+
+    // Reset file input
+    e.target.value = "";
+  };
+
+  /** Simple CSV parser */
+  async function parseSpreadsheetFile(file: File): Promise<Array<Record<string, unknown>>> {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = reader.result as string;
+        const lines = text.split(/\r?\n/).filter((l) => l.trim());
+        if (lines.length < 2) { resolve([]); return; }
+
+        // Parse header
+        const headers = lines[0].split(/[,\t]/).map((h) => h.trim());
+
+        // Map Chinese column names to field keys
+        const headerMap: Record<string, string> = {};
+        headers.forEach((h) => {
+          const keyMap: Record<string, string> = {
+            "姓名": "name", "名称": "name", "name": "name",
+            "年龄": "age", "age": "age",
+            "性别": "gender", "gender": "gender",
+            "收入水平": "income_level", "income_level": "income_level",
+            "家庭状况": "family_status", "family_status": "family_status",
+            "职业": "occupation", "occupation": "occupation",
+            "城市级别": "city_tier", "city_tier": "city_tier",
+            "驾龄": "driving_experience", "driving_experience": "driving_experience",
+            "购车经历": "car_ownership", "car_ownership": "car_ownership",
+            "科技偏好": "tech_affinity", "tech_affinity": "tech_affinity",
+            "界面偏好": "ui_complexity_pref", "ui_complexity_pref": "ui_complexity_pref",
+            "安全重视度": "safety_priority", "safety_priority": "safety_priority",
+            "用车场景": "driving_scenario", "driving_scenario": "driving_scenario",
+            "高频功能": "feature_priority", "feature_priority": "feature_priority",
+            "学习意愿": "learning_willingness", "learning_willingness": "learning_willingness",
+            "干扰容忍度": "distraction_tolerance", "distraction_tolerance": "distraction_tolerance",
+            "特殊需求": "accessibility_needs", "accessibility_needs": "accessibility_needs",
+            "品牌忠诚度": "brand_loyalty", "brand_loyalty": "brand_loyalty",
+            "自定义标签": "custom_tags", "custom_tags": "custom_tags",
+            "画像描述": "narrative", "narrative": "narrative",
+          };
+          headerMap[h] = keyMap[h] || h;
+        });
+
+        // Parse data rows
+        const rows = lines.slice(1).map((line) => {
+          const values = line.split(/[,\t]/);
+          const obj: Record<string, unknown> = {};
+          headers.forEach((h, i) => {
+            obj[headerMap[h]] = values[i]?.trim() || "";
+          });
+          return obj;
+        });
+
+        resolve(rows.filter((r) => r.name || r[headerMap["name"]]));
+      };
+      reader.readAsText(file);
+    });
+  }
+
   /* Load history records */
   useEffect(() => {
     setRecords(loadRecords());
@@ -574,88 +747,116 @@ export default function PersonalCenterPage() {
         {/* ====== TAB: 虚拟用户库 ====== */}
         {activeTab === "persona" && (
           <div className="space-y-6">
-            {/* Toolbar */}
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-400">
-                {personasLoaded && personas.length > 0
-                  ? `已创建 ${personas.length} 个虚拟用户`
-                  : "暂无虚拟用户，创建后可在审查时引用"}
-              </p>
-              <button
-                onClick={openCreateForm}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-all active:scale-[0.98] shadow-lg shadow-indigo-500/20 cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                新增用户
+            {/* Toolbar: 搜索 + 批量导入 + 新增 */}
+            <div className="flex flex-wrap items-center gap-3">
+              {/* 搜索框 */}
+              <div className="relative flex-1 min-w-[200px] max-w-sm">
+                <input
+                  type="text"
+                  value={personaSearch || ""}
+                  onChange={(e) => setPersonaSearch(e.target.value)}
+                  placeholder="按名称/标签搜索车主..."
+                  className="w-full pl-9 pr-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+                />
+                <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              </div>
+              {/* 批量导入按钮 */}
+              <button onClick={openBatchImport} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-all active:scale-[0.98] shadow-lg shadow-indigo-500/20 cursor-pointer">
+                <Upload className="w-4 h-4" />
+                批量导入
               </button>
+              {/* 新增按钮 */}
+              <button onClick={openCreateForm} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 border border-white/[0.08] transition-colors cursor-pointer">
+                <Plus className="w-4 h-4" />
+                新增车主
+              </button>
+              <p className="text-xs text-slate-500 ml-auto self-end">
+                {personasLoaded && personas.length > 0 ? `共 ${personas.length} 位车主` : "暂无数据"}
+              </p>
             </div>
 
-            {/* Persona Grid */}
-            {personasLoaded && personas.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                {personas.map((p) => (
-                  <div key={p.id} className="group relative rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm p-5 hover:bg-white/[0.04] hover:border-white/[0.1] transition-all">
-                    {/* Card Header: avatar + name + actions */}
-                    <div className="flex items-start justify-between mb-4">
+            {/* 筛选标签 */}
+            {personaFilterTags.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => setPersonaActiveFilter("all")}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer border ${
+                    personaActiveFilter === "all"
+                      ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30"
+                      : "bg-white/[0.03] text-slate-400 border-white/[0.06] hover:bg-white/[0.06]"
+                  }`}
+                >
+                  全部
+                </button>
+                {personaFilterTags.map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() => setPersonaActiveFilter(tag)}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer border ${
+                      personaActiveFilter === tag
+                        ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30"
+                        : "bg-white/[0.03] text-slate-400 border-white/[0.06] hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Persona Card Grid */}
+            {personasLoaded && filteredPersonas.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                {filteredPersonas.map((p) => (
+                  <div key={p.id} className="group relative rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 hover:bg-white/[0.04] hover:border-white/[0.1] transition-all cursor-default">
+                    {/* Card Header: avatar + name + tags + actions */}
+                    <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-3">
-                        <Avatar src={p.avatar} name={p.name} size="md" />
+                        <Avatar src={p.avatar} name={p.name} size="sm" />
                         <div>
-                          <h3 className="text-base font-semibold text-white group-hover:text-indigo-300 transition-colors">{p.name}</h3>
-                          {p.scenario && (
-                            <span className="inline-flex items-center gap-1 text-xs text-slate-400 mt-0.5">
-                              <Car className="w-3 h-3" />{p.scenario}
-                            </span>
+                          <h3 className="text-sm font-semibold text-white group-hover:text-indigo-300 transition-colors">{p.name}</h3>
+                          {p.customTags && p.customTags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {p.customTags.slice(0, 2).map((t) => (
+                                <span key={t} className="px-1.5 py-px rounded bg-indigo-500/10 text-[10px] text-indigo-400">{t}</span>
+                              ))}
+                              {p.customTags.length > 2 && <span className="px-1.5 py-px rounded bg-white/5 text-[10px] text-slate-500">+{p.customTags.length - 2}</span>}
+                            </div>
                           )}
                         </div>
                       </div>
-                      {/* Action buttons (hover visible) */}
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => openEditForm(p)} className="p-2 rounded-lg text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors" aria-label="编辑用户">
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleDeletePersona(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors" aria-label="删除用户">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => openEditForm(p)} className="p-1.5 rounded text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors" aria-label="编辑"><Edit3 className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => handleDeletePersona(p.id)} className="p-1.5 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors" aria-label="删除"><Trash2 className="w-3.5 h-3.5" /></button>
                       </div>
                     </div>
 
-                    {/* Info Grid */}
-                    <div className="space-y-2.5">
-                      {(p.age || p.gender) && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <User className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          <span className="text-slate-400">
-                            {[p.age, p.gender].filter(Boolean).join(" · ") || "—"}
-                          </span>
-                        </div>
-                      )}
-                      {p.drivingExperience && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <Shield className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          <span className="text-slate-400">驾龄 {p.drivingExperience}</span>
-                        </div>
-                      )}
-                      {p.tags && p.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 pt-1">
-                          {p.tags.map((t) => (
-                            <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] text-slate-400 text-xs border border-white/[0.05]">
-                              <Tag className="w-2.5 h-2.5" />{t}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {p.description && (
-                        <p className="text-xs text-slate-500 leading-relaxed line-clamp-2 pt-1 border-t border-white/[0.04]">{p.description}</p>
-                      )}
+                    {/* Key Features Row */}
+                    <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-[11px] text-slate-500 mb-2">
+                      {p.age && <span>{p.age}岁</span>}
+                      {p.age && p.gender && <span className="text-slate-700">·</span>}
+                      {p.gender && <span>{p.gender}</span>}
+                      {(p.age || p.gender) && p.drivingExperience && <span className="text-slate-700">·</span>}
+                      {p.drivingExperience && <span>{p.drivingExperience}</span>}
+                      {p.cityTier && <span className="ml-auto">{p.cityTier}</span>}
                     </div>
 
+                    {/* Behavior Preference Summary */}
+                    {(() => {
+                      const prefs = [p.techAffinity, p.safetyPriority === "极高" ? "安全优先" : "", p.uiComplexityPref].filter(Boolean);
+                      return prefs.length > 0 ? (
+                        <p className="text-[11px] text-slate-600 leading-relaxed line-clamp-2">{prefs.join(" · ")}</p>
+                      ) : null;
+                    })()}
+
                     {/* Timestamp */}
-                    <div className="mt-4 pt-3 border-t border-white/[0.04] flex items-center gap-1.5 text-[11px] text-slate-600">
+                    <div className="mt-3 pt-2 border-t border-white/[0.03] flex items-center justify-between text-[10px] text-slate-600">
                       <Clock className="w-3 h-3" />
-                      更新于 {new Date(p.updatedAt).toLocaleString("zh-CN")}
+                      {new Date(p.updatedAt).toLocaleDateString("zh-CN")}
                     </div>
                   </div>
                 ))}
+
               </div>
             ) : personasLoaded ? (
               /* Empty State */

@@ -5,6 +5,22 @@ import Link from "next/link";
 import { ArrowLeft, ChevronRight, FileDown, Download, Home, Users, ChevronDown } from "lucide-react";
 
 /* ============================================================
+   Dimension Code → Name 映射
+   ============================================================ */
+const DIMENSION_NAME_MAP: Record<string, string> = {
+  D1: "驾驶安全性", D2: "视觉可读性", D3: "信息架构",
+  D4: "交互效率",  D5: "一致性",     D6: "无障碍",
+  D7: "美观度",    D8: "品牌感",
+};
+function resolveDimensionName(raw: string): string {
+  // 支持多维度组合：如 "D1" 或 "D1/D3/D6"
+  return raw.split("/").map(code => {
+    const trimmed = code.trim();
+    return DIMENSION_NAME_MAP[trimmed] || trimmed;
+  }).join("/");
+}
+
+/* ============================================================
    Types
    ============================================================ */
 interface DimensionScore {
@@ -287,7 +303,7 @@ function handleExportWord(result: ReviewResult | null) {
     <h2>问题清单（共${result.issues.length}项）</h2>
     ${result.issues.map(issue => `
       <div class="issue-card">
-        <h3>[${severityMap[issue.severity] || issue.severity}] ${issue.dimension} — ${issue.category}</h3>
+        <h3>[${severityMap[issue.severity] || issue.severity}] ${(issue.dimension || "").split("/").map(c => DIMENSION_NAME_MAP[c.trim()] || c.trim()).join("/")} — ${issue.category}</h3>
         <div class="as-is"><strong>AS-IS 当前问题：</strong>${issue.description}</div>
         <div class="to-be"><strong>TO-BE 改进建议：</strong>${issue.suggestion}</div>
       </div>
@@ -661,7 +677,7 @@ export default function ReportPage() {
                   <div className="p-4">
                     {/* Header row - severity badge + dimension title */}
                     <div className="flex items-center justify-between mb-2.5">
-                      <h4 className="text-sm font-semibold text-indigo-300">{issue.dimension}</h4>
+                      <h4 className="text-sm font-semibold text-indigo-300">{resolveDimensionName(issue.dimension)}</h4>
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider shrink-0 border ${sevCfg.bg}`}>
                         {sevCfg.label}
                       </span>
