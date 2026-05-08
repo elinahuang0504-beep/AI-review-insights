@@ -27,7 +27,10 @@ import {
   addPersona,
   updatePersona,
   deletePersonaStorage,
+  batchAddPersonas,
   type Persona,
+  type Gender,
+  type DrivingExperience,
 } from "@/lib/persona";
 
 /* ============================================================
@@ -151,7 +154,7 @@ function PersonaFormModal({
       alert("请输入用户名称");
       return;
     }
-    onSave({ name: name.trim(), age, gender, drivingExperience, scenario, description, tags, avatar });
+    onSave({ name: name.trim(), age: age ? Number(age) : undefined, gender: gender as Gender, drivingExperience: drivingExperience as DrivingExperience, scenario, description, tags, avatar });
     onClose();
   };
 
@@ -427,7 +430,7 @@ export default function PersonalCenterPage() {
           narrative: (row["画像描述"] || row["narrative"] as string) || "",
         }));
 
-        const { success } = batchAddPersonas(mapped.filter((d) => d.name));
+        const { success } = batchAddPersonas(mapped.filter((d) => d.name) as Omit<Persona, "id" | "createdAt" | "updatedAt">[]);
         setPersonas(loadPersonas());
         alert(`导入完成：成功 ${success} 条${mapped.length !== success ? `，失败 ${mapped.length - success} 条` : ""}`);
       }

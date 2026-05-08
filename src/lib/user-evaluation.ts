@@ -6,6 +6,9 @@
 import type { Persona, PersonaEvaluationResult, UserEvaluationSummary, GoalAchievement } from "./persona";
 import { loadPersonas } from "./persona";
 
+// Re-export types for downstream consumers (compare/page, report/page)
+export type { UserEvaluationSummary };
+
 /**
  * 运行完整的用户评测流程（客户端版本）
  * 通过 /api/user-eval 服务端路由调用 AI，避免暴露 API Key

@@ -53,6 +53,11 @@ export interface Persona {
 
   /* ===== 画像描述 (Narrative) ===== */
   narrative?: string;              // AI生成/管理员撰写的自然语言描述
+  description?: string;            // 简短描述别名（表单兼容）
+
+  /* ===== 表单快捷字段（简化编辑用） ===== */
+  scenario?: string;               // 用车场景单选（表单兼容，drivingScenario 为多选版）
+  tags?: string[];                 // 标签别名（表单兼容，customTags 为正式字段）
 
   /* ===== 元数据 ===== */
   createdAt: string;
