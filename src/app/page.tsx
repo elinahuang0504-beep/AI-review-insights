@@ -32,7 +32,7 @@ import { runUserEvaluations } from "@/lib/user-evaluation";
  * 压缩图片：缩小尺寸 + JPEG 压缩
  * 大图（>1MB）压缩到 ~300-500KB，减少 API payload 和 429 风险
  */
-async function compressAndEncode(file: File, maxWidth = 1920, quality = 0.75): Promise<string> {
+async function compressAndEncode(file: File, maxWidth = 1280, quality = 0.6): Promise<string> {
   const originalSizeKB = file.size / 1024;
 
   // 小文件（<200KB）不压缩，直接返回 base64
@@ -735,6 +735,7 @@ function ReviewTab() {
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
                     <span>{userEvalEnabled ? "正在分析（专家审查 + 用户评测）..." : "正在深度分析..."}</span>
+                    <span className="text-xs opacity-60 ml-2">预计30-60秒</span>
                   </>
                 ) : (
                   <>

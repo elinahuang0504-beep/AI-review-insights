@@ -146,6 +146,7 @@ function getGLMClient(): OpenAI {
 }
 
 const VISION_MODEL = "glm-5v-turbo";
+const FALLBACK_MODEL = "glm-4v"; // 降级备选模型
 
 /* ============================================================
    System Prompts
@@ -153,9 +154,9 @@ const VISION_MODEL = "glm-5v-turbo";
    ============================================================ */
 
 const REVIEW_SYSTEM_PROMPT =
-  "你是HMI/车载UX评审专家(15年经验)。遵循ISO15007、NHTSA视线偏移≤2秒、WCAG2.1 AA标准。" +
-  "【8维度】D1驾驶安全性[20%]:视线偏移/操作步数/触控目标/驾驶干扰;D2视觉可读性[15%]:对比度/字体/色彩/眩光;D3信息架构[15%]:层级/分组/导航;D4交互效率[15%]:路径长度/反馈/手势;D5一致性[10%]:视觉/交互统一;D6无障碍[10%]:WCAG/色盲/容错;D7美观度[10%]:层次/节奏/和谐;D8品牌感[5%]。" +
-  "【问题等级】致命Critical=安全违规/事故风险;严重Serious=影响体验安全;Warning=偏离最佳实践;Info=优化建议。" +
+  "HMI评审专家。标准:ISO15007,NHTSA≤2秒,WCAG2.1。" +
+  "8维:D1驾驶安全[20%],D2可读性[15%],D3信息架构[15%],D4交互效率[15%],D5一致性[10%],D6无障碍[10%],D7美观[10%],D8品牌[5%]。" +
+  "等级:Critical(安全),Serious(体验),Warning(优化),Info(建议)。" +
   "输出JSON:{overallScore:0-10,rating,summary,dimensions:[{code,score,reasoning}],issues:[{id,severity,dimension,description,suggestion}]}";
 
 const COMPARE_SYSTEM_PROMPT =
@@ -498,6 +499,7 @@ function safeParseJson(text: string, fallbackLabel: string = "result"): any {
 
 /**
  * Perform a full HMI Design Review using Zhipu GLM-5V-Turbo
+ * 支持 429 限流时自动降级到 glm-4v
  */
 export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
   const client = getGLMClient();
@@ -505,68 +507,84 @@ export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
   const imageContents = prepareImageContents(req.images);
   const prompt = buildReviewPrompt(req);
 
-  try {
-    const completion = await withRetry(() =>
-      client.chat.completions.create({
-        model: VISION_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: `${REVIEW_SYSTEM_PROMPT}\n\n${prompt}\n\n直接输出JSON，不要markdown。` },
-              ...imageContents,
-            ],
-          },
-        ],
-        temperature: 0.3,
-        max_tokens: 4096,
-      })
-    );
+  // 模型降级队列：glm-5v-turbo → glm-4v
+  const models = [VISION_MODEL, FALLBACK_MODEL];
+  let lastError: any = null;
 
-    const responseText = completion.choices[0]?.message?.content || "";
-    const parsed = safeParseJson(responseText, "Review");
+  for (const model of models) {
+    try {
+      const completion = await withRetry(() =>
+        client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: `${REVIEW_SYSTEM_PROMPT}\n\n${prompt}\n\n直接输出JSON，不要markdown。` },
+                ...imageContents,
+              ],
+            },
+          ],
+          temperature: 0.3,
+          max_tokens: 4096,
+        })
+      );
 
-    // Enrich with dimension metadata and colors
-    const enrichedDimensions: DimensionScore[] = DIMENSIONS.map(dim => {
-      const found = parsed.dimensions?.find((d: any) => d.code === dim.code) || {};
+      const responseText = completion.choices[0]?.message?.content || "";
+      const parsed = safeParseJson(responseText, "Review");
+
+      // Enrich with dimension metadata and colors
+      const enrichedDimensions: DimensionScore[] = DIMENSIONS.map(dim => {
+        const found = parsed.dimensions?.find((d: any) => d.code === dim.code) || {};
+        return {
+          code: dim.code,
+          name: dim.name,
+          score: Math.max(0, Math.min(10, found.score ?? 7.0)),
+          maxScore: 10,
+          color: dim.color,
+          reasoning: found.reasoning || "",
+        };
+      });
+
+      const enrichedIssues: IssueItem[] = (parsed.issues || []).map((issue: any, idx: number) => ({
+        id: issue.id || `issue_${idx + 1}`,
+        severity: normalizeSeverity(issue.severity),
+        category: issue.category || "未分类",
+        dimension: issue.dimension || "其他",
+        description: issue.description || "",
+        suggestion: issue.suggestion || "",
+        imageIndex: issue.imageIndex,
+      }));
+
       return {
-        code: dim.code,
-        name: dim.name,
-        score: Math.max(0, Math.min(10, found.score ?? 7.0)),
-        maxScore: 10,
-        color: dim.color,
-        reasoning: found.reasoning || "",
+        overallScore: Math.max(0, Math.min(10, parsed.overallScore ?? 7.0)),
+        rating: calculateRating(Math.max(0, Math.min(10, parsed.overallScore ?? 7.0)), parsed.rating),
+        summary: parsed.summary || "AI分析完成",
+        dimensions: enrichedDimensions,
+        issues: enrichedIssues,
       };
-    });
-
-    const enrichedIssues: IssueItem[] = (parsed.issues || []).map((issue: any, idx: number) => ({
-      id: issue.id || `issue_${idx + 1}`,
-      severity: normalizeSeverity(issue.severity),
-      category: issue.category || "未分类",
-      dimension: issue.dimension || "其他",
-      description: issue.description || "",
-      suggestion: issue.suggestion || "",
-      imageIndex: issue.imageIndex,
-    }));
-
-    return {
-      overallScore: Math.max(0, Math.min(10, parsed.overallScore ?? 7.0)),
-      rating: calculateRating(Math.max(0, Math.min(10, parsed.overallScore ?? 7.0)), parsed.rating),
-      summary: parsed.summary || "AI分析完成",
-      dimensions: enrichedDimensions,
-      issues: enrichedIssues,
-    };
-  } catch (error: any) {
-    console.error("Zhipu GLM review error:", {
-      message: error?.message,
-      status: error?.status,
-      code: error?.code,
-      type: error?.type,
-      stack: error?.stack?.slice(0, 500),
-      errorBody: error?.error ? JSON.stringify(error.error).slice(0, 500) : undefined,
-    });
-    throw new Error(`AI分析失败: ${error instanceof Error ? error.message : "未知错误"}`);
+    } catch (error: any) {
+      lastError = error;
+      // 429 限流时尝试降级模型
+      if (isRateLimitError(error) && model !== FALLBACK_MODEL) {
+        console.warn(`[Model Fallback] ${model} 限流，尝试降级到 ${FALLBACK_MODEL}`);
+        continue;
+      }
+      // 其他错误直接抛出
+      throw new Error(`AI分析失败: ${error instanceof Error ? error.message : "未知错误"}`);
+    }
   }
+
+  // 所有模型都失败
+  console.error("Zhipu GLM review error:", {
+    message: lastError?.message,
+    status: lastError?.status,
+    code: lastError?.code,
+    type: lastError?.type,
+    stack: lastError?.stack?.slice(0, 500),
+    errorBody: lastError?.error ? JSON.stringify(lastError.error).slice(0, 500) : undefined,
+  });
+  throw new Error(`AI分析失败: ${lastError instanceof Error ? lastError.message : "API限流，请稍后重试"}`);
 }
 
 /**
