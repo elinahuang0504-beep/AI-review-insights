@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { performReview } from "@/lib/gemini";
+import type { ReviewResult } from "@/lib/gemini";
 import { buildUserEvalPrompt, parseUserEvalResponse, summarizeEvaluations } from "@/lib/user-evaluation";
 import type { Persona } from "@/lib/persona";
 import OpenAI from "openai";
 
-// Vercel: 增加Serverless Function最大执行时间到180秒
+// Vercel Hobby 实际限制60s，设置稍高以利用全部配额
 export const maxDuration = 180;
 
 function getGLMClient(): OpenAI {
@@ -15,16 +16,45 @@ function getGLMClient(): OpenAI {
   return new OpenAI({
     apiKey,
     baseURL: "https://open.bigmodel.cn/api/paas/v4/",
-    timeout: 180000,
-    maxRetries: 1,
+    timeout: 60000,
+    maxRetries: 0,
   });
 }
 
-/** 内部执行用户评测（与审查共享同一份图片数据） */
-async function runUserEvalInternally(
-  images: { data: string; name: string; state: string }[],
+/**
+ * 构造审查结果摘要文本，供用户评测AI参考
+ * 包含：总分、各维度得分+理由、关键问题摘要
+ */
+function buildReviewContext(reviewResult: ReviewResult, goals: string[]): string {
+  const dimLines = reviewResult.dimensions.map(d =>
+    `- ${d.name}(${d.code}): ${d.score.toFixed(1)}/10 — ${d.reasoning || "无详细说明"}`
+  ).join("\n");
+  const topIssues = reviewResult.issues.slice(0, 5).map(i =>
+    `[${i.severity}] ${i.dimension}: ${i.description?.slice(0, 80)}`
+  ).join("\n");
+
+  return `## 专家审查结果摘要
+总分: ${reviewResult.overallScore.toFixed(1)}/10 (${reviewResult.rating})
+总结: ${reviewResult.summary}
+
+各维度评分:
+${dimLines}
+
+关键问题:
+${topIssues || "无严重问题"}
+
+待评测目标:
+${goals.map((g, i) => `${i + 1}. ${g}`).join("\n")}`;
+}
+
+/**
+ * 轻量级用户评测（无图片，使用审查结果文本作上下文）
+ * 耗时 ~5-15s/人，远低于视觉模型版本
+ */
+async function runUserEvalFast(
+  reviewContext: string,
   personas: Persona[],
-  taskInfo: { taskName: string; description: string; goals: string[] },
+  taskDesc: string,
   goals: string[],
   sampleSize: number,
 ) {
@@ -33,22 +63,20 @@ async function runUserEvalInternally(
 
   const client = getGLMClient();
   const results: ReturnType<typeof parseUserEvalResponse>[] = [];
-  const MODEL_FALLBACKS = ["glm-5v-turbo", "glm-4v", "glm-4-flash"];
+  // 使用快速文本模型，不依赖视觉能力
+  const MODEL_FALLBACKS = ["glm-4-flash", "glm-4-plus"];
 
   for (const persona of selected) {
     let evalSuccess = false;
     for (const model of MODEL_FALLBACKS) {
       try {
-        const prompt = buildUserEvalPrompt(persona, taskInfo.description || taskInfo.taskName, goals || [], images.length);
-        const content: any[] = [{ type: "text", text: prompt }];
-        for (const img of images) {
-          content.push({ type: "image_url", image_url: { url: img.data } });
-        }
+        const prompt = buildUserEvalPrompt(persona, taskDesc, goals, 0);
+        const fullPrompt = `${reviewContext}\n\n---\n\n${prompt}`;
         const completion = await client.chat.completions.create({
           model,
-          messages: [{ role: "user", content }],
+          messages: [{ role: "user", content: fullPrompt }],
           temperature: 0.4,
-          max_tokens: 4096,
+          max_tokens: 1024,
         });
         const rawText = completion.choices[0]?.message?.content || "";
         const parsed = parseUserEvalResponse(rawText, persona);
@@ -59,19 +87,16 @@ async function runUserEvalInternally(
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        if (errMsg.includes("model_not_found") || errMsg.includes("invalid_model") || errMsg.includes("403") || errMsg.includes("401") || errMsg.includes("not available")) {
+        if (errMsg.includes("model_not_found") || errMsg.includes("invalid_model") || errMsg.includes("403") || errMsg.includes("401")) {
           continue;
         }
         break;
       }
     }
-    if (!evalSuccess) {
-      console.warn(`[Review/user-eval] 车主 ${persona.name} 所有模型均失败`);
-    }
   }
 
   if (results.length === 0) return null;
-  return summarizeEvaluations(results, selected.length);
+  return summarizeEvaluations(results.filter((r): r is NonNullable<typeof r> => r !== null), selected.length);
 }
 
 export async function POST(req: NextRequest) {
@@ -80,7 +105,7 @@ export async function POST(req: NextRequest) {
     console.log(`[Review API] Request received, size: ${contentLength} bytes`);
 
     const body = await req.json();
-    
+
     if (!body.images || !Array.isArray(body.images) || body.images.length === 0) {
       return NextResponse.json({ error: "请上传至少1张设计稿图片" }, { status: 400 });
     }
@@ -105,23 +130,27 @@ export async function POST(req: NextRequest) {
       evalMode: body.evalMode || "standard",
     };
 
-    // 1. 执行专家审查
+    const goals = body.goals || [];
+    const ue = body.userEval;
+    const shouldRunUserEval = ue?.enabled && Array.isArray(ue.personas) && ue.personas.length > 0;
+
+    // 1. 审查（视觉模型，30-50s）
     const reviewResult = await performReview(reviewRequest);
 
-    // 2. 执行用户评测（使用同一份图片，不额外传输）
+    // 2. 用户评测（文本模型，5-15s，不传图，用审查结果作上下文）
     let userEvalSummary = null;
-    const ue = body.userEval;
-    if (ue?.enabled && Array.isArray(ue.personas) && ue.personas.length > 0) {
+    if (shouldRunUserEval && reviewResult) {
       try {
-        userEvalSummary = await runUserEvalInternally(
-          reviewRequest.images,
+        const reviewContext = buildReviewContext(reviewResult, goals);
+        userEvalSummary = await runUserEvalFast(
+          reviewContext,
           ue.personas,
-          { taskName: body.taskName, description: body.description || "", goals: body.goals || [] },
-          body.goals || [],
+          body.taskName,
+          goals,
           ue.sampleSize || ue.personas.length,
         );
       } catch (evalErr) {
-        console.error("[Review/user-eval] 内部评测异常:", evalErr);
+        console.error("[Review/user-eval] 评测异常:", evalErr);
       }
     }
 
