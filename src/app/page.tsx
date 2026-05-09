@@ -22,7 +22,6 @@ import {
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { runUserEvaluations } from "@/lib/user-evaluation";
 
 /* ============================================================
    Session storage for passing review data to report page
@@ -472,6 +471,10 @@ function ReviewTab() {
       // Call AI review API (3分钟超时，大图片分析需要更长时间)
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
+      // 读取虚拟车主库（用于用户评测）
+      const rawPersonas = (() => {
+        try { return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]"); } catch { return []; }
+      })();
       let response: Response;
       try {
         response = await fetch("/api/review", {
@@ -485,6 +488,10 @@ function ReviewTab() {
             systemType: "中控屏",
             scene: scene === "driving" ? "驾驶中使用" : "静止状态使用",
             evalMode: scene === "driving" ? "safety" : "standard",
+            // 用户评测：一次性传入，服务端使用同一份图片
+            userEval: userEvalEnabled && Array.isArray(rawPersonas) && rawPersonas.length > 0
+              ? { enabled: true, personas: rawPersonas, sampleSize: userEvalSampleSize }
+              : undefined,
           }),
           signal: controller.signal,
         });
@@ -502,7 +509,12 @@ function ReviewTab() {
       } else {
         const json = await response.json();
         if (json.success && json.data) {
-          reviewData = json.data;
+          // 新版格式：{ review, userEvalSummary }
+          reviewData = json.data.review || json.data;
+          // 提取用户评测结果（服务端已用同一份图片完成评测）
+          if (json.data.userEvalSummary) {
+            sessionStorage.setItem("userEvaluationSummary", JSON.stringify(json.data.userEvalSummary));
+          }
         } else {
           throw new Error(json.error || "服务器返回数据格式异常");
         }
@@ -516,18 +528,6 @@ function ReviewTab() {
         url: img.url,
         stateDesc: img.stateDesc || "默认展示",
       }))));
-
-      // 用户评测（PRD v1.1）
-      if (userEvalEnabled) {
-        const taskInfo = { taskName: description || "未命名审查任务", description, goals: goals.filter(g => g.trim()) };
-        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize, imageData);
-        // 始终写入 sessionStorage（即使失败），让报告页能显示状态
-        sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
-        // 如果评测未成功，给用户提示
-        if (!userEvalResult.enabled && userEvalResult.errorMessage) {
-          console.warn("[用户评测]", userEvalResult.errorMessage);
-        }
-      }
 
       // Persist history record to localStorage (with full data for later viewing)
       saveHistoryRecord(description || "未命名审查任务", "review", reviewData.overallScore, reviewData);
@@ -869,6 +869,10 @@ function CompareTab() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000);
       let response: Response;
+      // 读取虚拟车主库（用于用户评测）
+      const comparePersonas = (() => {
+        try { return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]"); } catch { return []; }
+      })();
       try {
         response = await fetch("/api/compare", {
           method: "POST",
@@ -879,6 +883,10 @@ function CompareTab() {
             taskName: description || "未命名对比任务",
             description,
             goals: goals.filter(g => g.trim()),
+            // 用户评测：一次性传入，服务端使用同一份图片
+            userEval: userEvalEnabled && Array.isArray(comparePersonas) && comparePersonas.length > 0
+              ? { enabled: true, personas: comparePersonas, sampleSize: userEvalSampleSize }
+              : undefined,
           }),
           signal: controller.signal,
         });
@@ -894,7 +902,11 @@ function CompareTab() {
       const json = await response.json();
       if (!json.success || !json.data) throw new Error(json.error || "服务器返回数据格式异常");
 
-      const compareResult = json.data;
+      // 新版格式：{ compare, userEvalSummary }
+      const compareResult = json.data.compare || json.data;
+      if (json.data.userEvalSummary) {
+        sessionStorage.setItem("userEvaluationSummary", JSON.stringify(json.data.userEvalSummary));
+      }
 
       // 存储到sessionStorage供对比报告页使用
       sessionStorage.setItem("compareResult", JSON.stringify(compareResult));
@@ -903,19 +915,6 @@ function CompareTab() {
         { url: imageA.url, stateDesc: imageA.stateDesc || "默认展示" },
         { url: imageB.url, stateDesc: imageB.stateDesc || "默认展示" },
       ]));
-
-      // 用户评测（PRD v1.1）
-      if (userEvalEnabled) {
-        const taskInfo = { taskName: description || "未命名对比任务", description, goals: goals.filter(g => g.trim()) };
-        const userEvalImages = [v1Data, v2Data].map(({ data, name }) => ({ data, name }));
-        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize, userEvalImages);
-        // 始终写入 sessionStorage（即使失败），让报告页能显示状态
-        sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
-        // 如果评测未成功，给用户提示
-        if (!userEvalResult.enabled && userEvalResult.errorMessage) {
-          console.warn("[用户评测]", userEvalResult.errorMessage);
-        }
-      }
 
       saveHistoryRecord(description || "未命名对比任务", "compare",
         Math.max(compareResult.v1Review.overallScore, compareResult.v2Review.overallScore), compareResult);
