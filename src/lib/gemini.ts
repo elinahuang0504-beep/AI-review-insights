@@ -146,7 +146,7 @@ function getGLMClient(): OpenAI {
 }
 
 const VISION_MODEL = "glm-5v-turbo";
-const FALLBACK_MODEL = "glm-4v"; // 降级备选模型
+const FALLBACK_MODELS = ["glm-4v", "glm-4v-flash"]; // 降级视觉模型列表
 
 /* ============================================================
    System Prompts
@@ -498,8 +498,9 @@ function safeParseJson(text: string, fallbackLabel: string = "result"): any {
    ============================================================ */
 
 /**
- * Perform a full HMI Design Review using Zhipu GLM-5V-Turbo
- * 支持 429 限流时自动降级到 glm-4v
+ * Perform a full HMI Design Review using Zhipu GLM Vision Models
+ * 安全降级：glm-5v-turbo → glm-4v → glm-4v-flash
+ * 仅在429限流时降级，其他错误直接抛出
  */
 export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
   const client = getGLMClient();
@@ -507,12 +508,13 @@ export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
   const imageContents = prepareImageContents(req.images);
   const prompt = buildReviewPrompt(req);
 
-  // 模型降级队列：glm-5v-turbo → glm-4v
-  const models = [VISION_MODEL, FALLBACK_MODEL];
+  // 模型降级队列：按优先级排序的视觉模型
+  const models = [VISION_MODEL, ...FALLBACK_MODELS];
   let lastError: any = null;
 
   for (const model of models) {
     try {
+      console.log(`[Review] 使用模型: ${model}`);
       const completion = await withRetry(() =>
         client.chat.completions.create({
           model,
@@ -565,30 +567,35 @@ export async function performReview(req: ReviewRequest): Promise<ReviewResult> {
       };
     } catch (error: any) {
       lastError = error;
-      // 429 限流时尝试降级模型
-      if (isRateLimitError(error) && model !== FALLBACK_MODEL) {
-        console.warn(`[Model Fallback] ${model} 限流，尝试降级到 ${FALLBACK_MODEL}`);
-        continue;
+      // 429 限流时尝试降级到下一个视觉模型
+      if (isRateLimitError(error)) {
+        const nextModel = models[models.indexOf(model) + 1];
+        if (nextModel) {
+          console.warn(`[Model Fallback] ${model} 限流，降级到 ${nextModel}`);
+          continue;
+        }
       }
-      // 其他错误直接抛出
-      throw new Error(`AI分析失败: ${error instanceof Error ? error.message : "未知错误"}`);
+      // 非限流错误或已尝试所有模型：直接抛出
+      console.error("Zhipu GLM review error:", {
+        model,
+        message: error?.message,
+        status: error?.status,
+        code: error?.code,
+        type: error?.type,
+        stack: error?.stack?.slice(0, 500),
+        errorBody: error?.error ? JSON.stringify(error.error).slice(0, 500) : undefined,
+      });
+      throw new Error(`AI分析失败: ${error instanceof Error ? error.message : "API限流，请稍后重试"}`);
     }
   }
 
   // 所有模型都失败
-  console.error("Zhipu GLM review error:", {
-    message: lastError?.message,
-    status: lastError?.status,
-    code: lastError?.code,
-    type: lastError?.type,
-    stack: lastError?.stack?.slice(0, 500),
-    errorBody: lastError?.error ? JSON.stringify(lastError.error).slice(0, 500) : undefined,
-  });
-  throw new Error(`AI分析失败: ${lastError instanceof Error ? lastError.message : "API限流，请稍后重试"}`);
+  throw new Error(`AI分析失败: ${lastError instanceof Error ? lastError.message : "所有视觉模型均不可用"}`);
 }
 
 /**
  * Perform a comparison review between two design versions
+ * 安全降级：glm-5v-turbo → glm-4v → glm-4v-flash
  */
 export async function performComparison(req: CompareRequest): Promise<CompareResult> {
   const client = getGLMClient();
@@ -597,25 +604,31 @@ export async function performComparison(req: CompareRequest): Promise<CompareRes
   const v2ImageContents = prepareImageContents(req.v2Images);
   const prompt = buildComparePrompt(req);
 
-  try {
-    const completion = await withRetry(() =>
-      client.chat.completions.create({
-        model: VISION_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: `${COMPARE_SYSTEM_PROMPT}\n\n${prompt}\n\n直接输出JSON，不要markdown。` },
-              ...v1ImageContents,
-              { type: "text", text: "\n--- 以上V1 ---\n以下是V2:\n" },
-              ...v2ImageContents,
-            ],
-          },
+  // 模型降级队列：按优先级排序的视觉模型
+  const models = [VISION_MODEL, ...FALLBACK_MODELS];
+  let lastError: any = null;
+
+  for (const model of models) {
+    try {
+      console.log(`[Compare] 使用模型: ${model}`);
+      const completion = await withRetry(() =>
+        client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: `${COMPARE_SYSTEM_PROMPT}\n\n${prompt}\n\n直接输出JSON，不要markdown。` },
+                ...v1ImageContents,
+                { type: "text", text: "\n--- 以上V1 ---\n以下是V2:\n" },
+                ...v2ImageContents,
+              ],
+            },
         ],
         temperature: 0.3,
         max_tokens: 8192,
       })
-    );
+      );
 
     const responseText = completion.choices[0]?.message?.content || "";
     console.log("[Compare] Raw response length:", responseText.length);
@@ -684,14 +697,37 @@ export async function performComparison(req: CompareRequest): Promise<CompareRes
       },
       recommendation: parsed.recommendation || "需要进一步分析",
     };
-  } catch (error) {
-    console.error("Zhipu GLM comparison error:", error);
-    throw new Error(`AI对比失败: ${error instanceof Error ? error.message : "未知错误"}`);
+    } catch (error: any) {
+      lastError = error;
+      // 429 限流时尝试降级到下一个视觉模型
+      if (isRateLimitError(error)) {
+        const nextModel = models[models.indexOf(model) + 1];
+        if (nextModel) {
+          console.warn(`[Model Fallback] ${model} 限流，降级到 ${nextModel}`);
+          continue;
+        }
+      }
+      // 非限流错误或已尝试所有模型：直接抛出
+      console.error("Zhipu GLM comparison error:", {
+        model,
+        message: error?.message,
+        status: error?.status,
+        code: error?.code,
+        type: error?.type,
+        stack: error?.stack?.slice(0, 500),
+        errorBody: error?.error ? JSON.stringify(error.error).slice(0, 500) : undefined,
+      });
+      throw new Error(`AI对比失败: ${error instanceof Error ? error.message : "API限流，请稍后重试"}`);
+    }
   }
+
+  // 所有模型都失败
+  throw new Error(`AI对比失败: ${lastError instanceof Error ? lastError.message : "所有视觉模型均不可用"}`);
 }
 
 /**
  * Analyze uploaded images to auto-predict UI states and elements
+ * 安全降级：glm-5v-turbo → glm-4v → glm-4v-flash
  */
 export async function analyzeImages(
   images: { data: string; name: string }[]
@@ -700,52 +736,83 @@ export async function analyzeImages(
 
   const imageContents = prepareImageContents(images.map(i => ({ ...i, state: "" })));
 
-  try {
-    const completion = await withRetry(() =>
-      client.chat.completions.create({
-        model: VISION_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: [
-              ...imageContents,
-              {
-                type: "text",
-                text: `分析HMI截图，每张返回JSON: {state:"界面状态", detectedElements:["元素列表"], uiDescription:"描述"}。状态可选：默认展示/点击前/悬停态/按下态/点击后/选中态/加载中/成功态/错误态/空状态/编辑态/展开态。输出JSON数组，按图片顺序。`,
-              },
-            ],
-          },
-        ],
-      temperature: 0.2,
-      max_tokens: 2048,
-    })
-    );
+  // 模型降级队列：按优先级排序的视觉模型
+  const models = [VISION_MODEL, ...FALLBACK_MODELS];
+  let lastError: any = null;
 
-    const responseText = completion.choices[0]?.message?.content || "";
-    const parsed = safeParseJson(responseText, "AnalyzeImages");
+  for (const model of models) {
+    try {
+      console.log(`[Analyze] 使用模型: ${model}`);
+      const completion = await withRetry(() =>
+        client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                ...imageContents,
+                {
+                  type: "text",
+                  text: `分析HMI截图，每张返回JSON: {state:"界面状态", detectedElements:["元素列表"], uiDescription:"描述"}。状态可选：默认展示/点击前/悬停态/按下态/点击后/选中态/加载中/成功态/错误态/空状态/编辑态/展开态。输出JSON数组，按图片顺序。`,
+                },
+              ],
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 2048,
+        })
+      );
 
-    // Handle both array and object responses
-    const items = Array.isArray(parsed) ? parsed : (parsed.results || parsed.data || [parsed]);
+      const responseText = completion.choices[0]?.message?.content || "";
+      const parsed = safeParseJson(responseText, "AnalyzeImages");
 
-    return items.map((item: any, idx: number) => ({
-      index: idx,
-      state: item.state || "默认展示",
-      detectedElements: item.detectedElements || [],
-      uiDescription: item.uiDescription || "",
-    }));
-  } catch (error) {
-    console.error("Image analysis error:", error);
-    return images.map((_, idx) => ({
-      index: idx,
-      state: "默认展示",
-      detectedElements: [],
-      uiDescription: "分析失败",
-    }));
+      // Handle both array and object responses
+      const items = Array.isArray(parsed) ? parsed : (parsed.results || parsed.data || [parsed]);
+
+      return items.map((item: any, idx: number) => ({
+        index: idx,
+        state: item.state || "默认展示",
+        detectedElements: item.detectedElements || [],
+        uiDescription: item.uiDescription || "",
+      }));
+    } catch (error: any) {
+      lastError = error;
+      // 429 限流时尝试降级到下一个视觉模型
+      if (isRateLimitError(error)) {
+        const nextModel = models[models.indexOf(model) + 1];
+        if (nextModel) {
+          console.warn(`[Model Fallback] ${model} 限流，降级到 ${nextModel}`);
+          continue;
+        }
+      }
+      // 其他错误：返回默认数据而非抛出异常（保持向后兼容）
+      console.error("Image analysis error:", {
+        model,
+        message: error?.message,
+        status: error?.status,
+      });
+      // 降级失败：返回默认分析结果
+      return images.map((_, idx) => ({
+        index: idx,
+        state: "默认展示",
+        detectedElements: [],
+        uiDescription: "分析失败",
+      }));
+    }
   }
+
+  // 所有模型都失败：返回默认数据
+  return images.map((_, idx) => ({
+    index: idx,
+    state: "默认展示",
+    detectedElements: [],
+    uiDescription: "分析失败",
+  }));
 }
 
 /**
  * AI智能推断：根据上传的HMI截图，推断功能名称、关键目标和各图状态
+ * 安全降级：glm-5v-turbo → glm-4v → glm-4v-flash
  */
 export async function inferFromImages(
   images: { data: string; name: string }[]
@@ -754,18 +821,24 @@ export async function inferFromImages(
 
   const imageContents = prepareImageContents(images.map(i => ({ ...i, state: "" })));
 
-  try {
-    const completion = await withRetry(() =>
-      client.chat.completions.create({
-        model: VISION_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: [
-              ...imageContents,
-              {
-                type: "text",
-                text: `你是一位资深车载HMI产品经理。请分析以上${images.length}张HMI设计截图，推断以下信息并严格按JSON格式输出：
+  // 模型降级队列：按优先级排序的视觉模型
+  const models = [VISION_MODEL, ...FALLBACK_MODELS];
+  let lastError: any = null;
+
+  for (const model of models) {
+    try {
+      console.log(`[Inference] 使用模型: ${model}`);
+      const completion = await withRetry(() =>
+        client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                ...imageContents,
+                {
+                  type: "text",
+                  text: `你是一位资深车载HMI产品经理。请分析以上${images.length}张HMI设计截图，推断以下信息并严格按JSON格式输出：
 
 1. **functionName**: 这是什么功能页面？用简洁中文描述（例如"中控主屏幕快捷操作面板"、"空调控制界面"、"导航地图主页"等），不超过20字
 2. **goals**: 用户使用这个功能时最关键的2-3个目标（每条不超过30字，关注驾驶安全、操作效率、信息获取等）
@@ -776,30 +849,52 @@ export async function inferFromImages(
               },
             ],
           },
-        ],
-        temperature: 0.3,
-        max_tokens: 1024,
-      })
-    );
+          ],
+          temperature: 0.3,
+          max_tokens: 1024,
+        })
+      );
 
-    const responseText = completion.choices[0]?.message?.content || "";
-    const parsed = safeParseJson(responseText, "Inference");
+      const responseText = completion.choices[0]?.message?.content || "";
+      const parsed = safeParseJson(responseText, "Inference");
 
-    return {
-      functionName: parsed.functionName || "未命名功能",
-      goals: Array.isArray(parsed.goals) && parsed.goals.length > 0
-        ? parsed.goals.slice(0, 4)
-        : ["提升操作效率", "降低驾驶干扰"],
-      imageStates: Array.isArray(parsed.imageStates)
-        ? parsed.imageStates.map((s: string, i: number) => s || `第${i + 1}张`)
-        : images.map((_, i) => `第${i + 1}张`),
-    };
-  } catch (error) {
-    console.error("Inference error:", error);
-    return {
-      functionName: "未命名审查任务",
-      goals: ["请补充关键目标"],
-      imageStates: images.map((_, i) => `第${i + 1}张`),
-    };
+      return {
+        functionName: parsed.functionName || "未命名功能",
+        goals: Array.isArray(parsed.goals) && parsed.goals.length > 0
+          ? parsed.goals.slice(0, 4)
+          : ["提升操作效率", "降低驾驶干扰"],
+        imageStates: Array.isArray(parsed.imageStates)
+          ? parsed.imageStates.map((s: string, i: number) => s || `第${i + 1}张`)
+          : images.map((_, i) => `第${i + 1}张`),
+      };
+    } catch (error: any) {
+      lastError = error;
+      // 429 限流时尝试降级到下一个视觉模型
+      if (isRateLimitError(error)) {
+        const nextModel = models[models.indexOf(model) + 1];
+        if (nextModel) {
+          console.warn(`[Model Fallback] ${model} 限流，降级到 ${nextModel}`);
+          continue;
+        }
+      }
+      // 其他错误：返回默认数据而非抛出异常（保持向后兼容）
+      console.error("Inference error:", {
+        model,
+        message: error?.message,
+        status: error?.status,
+      });
+      return {
+        functionName: "未命名审查任务",
+        goals: ["请补充关键目标"],
+        imageStates: images.map((_, i) => `第${i + 1}张`),
+      };
+    }
   }
+
+  // 所有模型都失败：返回默认数据
+  return {
+    functionName: "未命名审查任务",
+    goals: ["请补充关键目标"],
+    imageStates: images.map((_, i) => `第${i + 1}张`),
+  };
 }
