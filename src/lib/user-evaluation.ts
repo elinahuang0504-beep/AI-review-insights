@@ -16,28 +16,38 @@ export type { UserEvaluationSummary };
  * @param taskInfo 任务信息（从页面传入）
  * @param goals 关键目标列表
  * @param sampleSize 采样车主数量
- * @returns UserEvaluationSummary 或 null
+ * @returns UserEvaluationSummary（始终返回对象，通过 enabled/errorMessage 区分状态）
  */
 export async function runUserEvaluations(
   taskInfo: { taskName: string; description: string; goals: string[] },
   goals: string[],
   sampleSize: number,
-): Promise<UserEvaluationSummary | null> {
-  try {
-    // 从 localStorage 读取车主库数据传给服务端
-    const rawPersonas = (() => {
-      try {
-        return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]");
-      } catch {
-        return [];
-      }
-    })();
-
-    if (!Array.isArray(rawPersonas) || rawPersonas.length === 0) {
-      console.warn("[runUserEvaluations] 没有可用的虚拟车主数据，跳过用户评测。请先在「个人中心→虚拟用户库」中添加车主。");
-      return null;
+): Promise<UserEvaluationSummary> {
+  // 从 localStorage 读取车主库数据传给服务端
+  const rawPersonas = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]");
+    } catch {
+      return [];
     }
+  })();
 
+  if (!Array.isArray(rawPersonas) || rawPersonas.length === 0) {
+    console.warn("[runUserEvaluations] 没有可用的虚拟车主数据。请先在「个人中心→虚拟用户库」中添加车主。");
+    return {
+      enabled: false,
+      sampleSize,
+      overallAverageScore: 0,
+      consistencyLevel: "low",
+      consistencyVariance: 0,
+      perGoalScores: [],
+      personas: [],
+      recommendation: "",
+      errorMessage: "虚拟用户库为空：请在「个人中心→虚拟用户库」中至少添加1位虚拟车主后再启用用户评测。",
+    };
+  }
+
+  try {
     const response = await fetch("/api/user-eval", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -55,10 +65,34 @@ export async function runUserEvaluations(
     }
 
     const json = await response.json();
-    return json.success ? json.data : null;
+    if (json.success && json.data) return json.data;
+
+    // API 返回 success:false
+    return {
+      enabled: false,
+      sampleSize,
+      overallAverageScore: 0,
+      consistencyLevel: "low",
+      consistencyVariance: 0,
+      perGoalScores: [],
+      personas: [],
+      recommendation: "",
+      errorMessage: json.error || "所有车主的评测均失败，请稍后重试。",
+    };
   } catch (err) {
-    console.error("[runUserEvaluations] 用户评测失败:", err instanceof Error ? err.message : err);
-    return null;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[runUserEvaluations] 用户评测失败:", errMsg);
+    return {
+      enabled: false,
+      sampleSize,
+      overallAverageScore: 0,
+      consistencyLevel: "low",
+      consistencyVariance: 0,
+      perGoalScores: [],
+      personas: [],
+      recommendation: "",
+      errorMessage: `评测异常: ${errMsg}`,
+    };
   }
 }
 

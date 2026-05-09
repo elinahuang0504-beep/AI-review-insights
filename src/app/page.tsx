@@ -519,15 +519,13 @@ function ReviewTab() {
 
       // 用户评测（PRD v1.1）
       if (userEvalEnabled) {
-        try {
-          const taskInfo = { taskName: description || "未命名审查任务", description, goals: goals.filter(g => g.trim()) };
-          const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
-          if (userEvalResult) {
-            sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
-          }
-        } catch (evalErr) {
-          console.warn("用户评测失败，报告将不包含评测数据:", evalErr);
-          sessionStorage.removeItem("userEvaluationSummary");
+        const taskInfo = { taskName: description || "未命名审查任务", description, goals: goals.filter(g => g.trim()) };
+        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
+        // 始终写入 sessionStorage（即使失败），让报告页能显示状态
+        sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
+        // 如果评测未成功，给用户提示
+        if (!userEvalResult.enabled && userEvalResult.errorMessage) {
+          console.warn("[用户评测]", userEvalResult.errorMessage);
         }
       }
 
@@ -909,15 +907,13 @@ function CompareTab() {
 
       // 用户评测（PRD v1.1）
       if (userEvalEnabled) {
-        try {
-          const taskInfo = { taskName: description || "未命名对比任务", description, goals: goals.filter(g => g.trim()) };
-          const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
-          if (userEvalResult) {
-            sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
-          }
-        } catch (evalErr) {
-          console.warn("用户评测失败，对比报告将不包含评测数据:", evalErr);
-          sessionStorage.removeItem("userEvaluationSummary");
+        const taskInfo = { taskName: description || "未命名对比任务", description, goals: goals.filter(g => g.trim()) };
+        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
+        // 始终写入 sessionStorage（即使失败），让报告页能显示状态
+        sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
+        // 如果评测未成功，给用户提示
+        if (!userEvalResult.enabled && userEvalResult.errorMessage) {
+          console.warn("[用户评测]", userEvalResult.errorMessage);
         }
       }
 

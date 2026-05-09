@@ -105,6 +105,7 @@ export interface UserEvaluationSummary {
   }[];
   personas: PersonaEvaluationResult[];
   recommendation: string;           // 综合推荐结论
+  errorMessage?: string;            // 错误信息（enabled=false 时存在）
 }
 
 const STORAGE_KEY = "virtualUserLibrary";

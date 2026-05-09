@@ -482,16 +482,18 @@ export default function ReportPage() {
             >
               专家审查
             </button>
-            {userEvalSummary && userEvalSummary.enabled && (
+            {userEvalSummary && (
               <button
                 onClick={() => scrollToSection("user-eval")}
                 className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-all cursor-pointer ${
                   activeTab === "user-eval"
                     ? "text-white bg-white/[0.06] border-b-2 border-indigo-500"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]"
+                    : userEvalSummary.enabled
+                      ? "text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]"
+                      : "text-amber-400/70 hover:text-amber-300 hover:bg-white/[0.03]"
                 }`}
               >
-                用户评测
+                用户评测{!userEvalSummary.enabled && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400">未完成</span>}
               </button>
             )}
           </div>
@@ -711,19 +713,51 @@ export default function ReportPage() {
         </div>
 
         {/* ===== 用户评测统一区域（PRD v1.1）===== */}
-        {userEvalSummary && userEvalSummary.enabled && (
+        {userEvalSummary && (
           <div ref={userEvalSectionRef} className="space-y-5">
             {/* Section Header — 无icon */}
             <div className="flex items-center gap-2.5">
               <h2 className="text-base font-bold text-white">用户评测</h2>
-              <span className="text-xs text-slate-500 ml-1">共 {userEvalSummary.sampleSize} 位车主独立评估</span>
+              {!userEvalSummary.enabled ? (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/20 font-medium">
+                  评测未完成
+                </span>
+              ) : (
+                <span className="text-xs text-slate-500 ml-1">共 {userEvalSummary.sampleSize} 位车主独立评估</span>
+              )}
             </div>
 
-            {/* 总结卡片 */}
-            <UserEvalSummaryCard summary={userEvalSummary} />
-
-            {/* 详情卡片网格 */}
-            <UserEvalDetailSection summary={userEvalSummary} />
+            {/* 未完成状态：显示错误原因或引导 */}
+            {!userEvalSummary.enabled ? (
+              <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.03] p-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
+                    <Users className="w-[18px] h-[18px] text-amber-400" />
+                  </div>
+                  <div className="space-y-2 flex-1">
+                    <p className="text-sm font-medium text-amber-300/90">
+                      用户评测未成功执行
+                    </p>
+                    <p className="text-[13px] text-slate-400 leading-relaxed">
+                      {userEvalSummary.errorMessage || "评测过程中出现异常，未能生成用户评测数据。"}
+                    </p>
+                  </div>
+                </div>
+                {(userEvalSummary?.errorMessage || "").includes("虚拟用户库为空") && (
+                  <div className="flex items-center gap-2 pl-12">
+                    <Link href="/history" className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors inline-flex items-center gap-1.5">
+                      前往添加虚拟车主 →
+                    </Link>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                {/* 正常状态：总结卡片 + 详情 */}
+                <UserEvalSummaryCard summary={userEvalSummary} />
+                <UserEvalDetailSection summary={userEvalSummary} />
+              </div>
+            )}
           </div>
         )}
 
