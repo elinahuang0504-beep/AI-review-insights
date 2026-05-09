@@ -556,7 +556,7 @@ export default function PersonalCenterPage() {
             { code: "D5", name: "一致性",     score: clamp(scoreValue + 0.9), maxScore: 10, color: "#f59e0b" },
             { code: "D6", name: "无障碍",     score: clamp(scoreValue - 0.4), maxScore: 10, color: "#ec4899" },
             { code: "D7", name: "美观度",     score: clamp(scoreValue + 0.5), maxScore: 10, color: "#06b6d4" },
-            { code: "D8", name: "品牌感",     score: clamp(scoreValue + 0.1), maxScore: 10, color: "#84cc16" },
+            { code: "D8", name: "功能完整性与状态感知",     score: clamp(scoreValue + 0.1), maxScore: 10, color: "#84cc16" },
           ],
           issues: [
             { id: "i1", severity: "warning" as const, category: "操作负荷", dimension: "驾驶安全性", description: "部分高频功能入口层级较深，驾驶中视线偏移时间可能超过推荐阈值。", suggestion: "将常用操作提升至一级或二级菜单，减少操作路径深度。" },

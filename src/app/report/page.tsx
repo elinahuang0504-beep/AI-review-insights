@@ -10,7 +10,7 @@ import { ArrowLeft, ChevronRight, FileDown, Download, Home, Users, ChevronDown }
 const DIMENSION_NAME_MAP: Record<string, string> = {
   D1: "驾驶安全性", D2: "视觉可读性", D3: "信息架构",
   D4: "交互效率",  D5: "一致性",     D6: "无障碍",
-  D7: "美观度",    D8: "品牌感",
+  D7: "美观度",    D8: "功能完整性与状态感知",
 };
 function resolveDimensionName(raw: string): string {
   // 支持多维度组合：如 "D1" 或 "D1/D3/D6"
@@ -752,7 +752,7 @@ export default function ReportPage() {
                 )}
               </div>
             ) : (
-              <div>
+              <div className="space-y-5">
                 {/* 正常状态：总结卡片 + 详情 */}
                 <UserEvalSummaryCard summary={userEvalSummary} />
                 <UserEvalDetailSection summary={userEvalSummary} />
@@ -1019,7 +1019,7 @@ function UserEvalDetailSection({ summary }: { summary: UserEvaluationSummary }) 
                     <div className="space-y-1">
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
-                        <span className="text-[11px] font-medium text-indigo-300/90">优点</span>
+                        <span className="text-[11px] font-medium text-indigo-300/90">建议</span>
                       </div>
                       <ul className="pl-4 space-y-0.5">
                         {allPos.slice(0, 3).map((s, i) => (
@@ -1042,7 +1042,7 @@ function UserEvalDetailSection({ summary }: { summary: UserEvaluationSummary }) 
                     <div className="space-y-1">
                       <div className="flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                        <span className="text-[11px] font-medium text-emerald-300/90">建议</span>
+                        <span className="text-[11px] font-medium text-emerald-300/90">缺点</span>
                       </div>
                       <ul className="pl-4 space-y-0.5">
                         {allPain.slice(0, 3).map((s, i) => (

@@ -520,7 +520,7 @@ function ReviewTab() {
       // 用户评测（PRD v1.1）
       if (userEvalEnabled) {
         const taskInfo = { taskName: description || "未命名审查任务", description, goals: goals.filter(g => g.trim()) };
-        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
+        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize, imageData);
         // 始终写入 sessionStorage（即使失败），让报告页能显示状态
         sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
         // 如果评测未成功，给用户提示
@@ -733,7 +733,6 @@ function ReviewTab() {
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
                     <span>{userEvalEnabled ? "正在分析（专家审查 + 用户评测）..." : "正在深度分析..."}</span>
-                    <span className="text-xs opacity-60 ml-2">预计30-60秒</span>
                   </>
                 ) : (
                   <>
@@ -908,7 +907,8 @@ function CompareTab() {
       // 用户评测（PRD v1.1）
       if (userEvalEnabled) {
         const taskInfo = { taskName: description || "未命名对比任务", description, goals: goals.filter(g => g.trim()) };
-        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize);
+        const userEvalImages = [v1Data, v2Data].map(({ data, name }) => ({ data, name }));
+        const userEvalResult = await runUserEvaluations(taskInfo, goals.filter(g => g.trim()), userEvalSampleSize, userEvalImages);
         // 始终写入 sessionStorage（即使失败），让报告页能显示状态
         sessionStorage.setItem("userEvaluationSummary", JSON.stringify(userEvalResult));
         // 如果评测未成功，给用户提示
@@ -1160,7 +1160,7 @@ function generateMockResult() {
       { code: "D5", name: "一致性", score: 8.5, maxScore: 10, color: "#f59e0b" },
       { code: "D6", name: "无障碍", score: 7.2, maxScore: 10, color: "#ec4899" },
       { code: "D7", name: "美观度", score: 8.0, maxScore: 10, color: "#06b6d4" },
-      { code: "D8", name: "品牌感", score: 7.4, maxScore: 10, color: "#84cc16" },
+      { code: "D8", name: "功能完整性与状态感知", score: 7.4, maxScore: 10, color: "#84cc16" },
     ],
     issues: [
       {
@@ -1292,16 +1292,6 @@ function UserEvalConfigPanel({
                   <span>1人</span>
                   <span>50人</span>
                 </div>
-              </div>
-
-              {/* 预估耗时提示 */}
-              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-indigo-500/[0.06] border border-indigo-500/15">
-                <Zap className="w-3.5 h-3.5 text-indigo-400 mt-0.5 shrink-0" />
-                <p className="text-xs text-indigo-300/80 leading-relaxed">
-                  预计额外增加约{" "}
-                  <strong>{Math.round(sampleSize * 12 * 0.8)}-{Math.round(sampleSize * 12 * 1.2)}秒</strong>{" "}
-                  处理时间。每个虚拟车主将独立完成目标达成率评测，结果将在报告中以独立区块展示。
-                </p>
               </div>
             </>
           )}

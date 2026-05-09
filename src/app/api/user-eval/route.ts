@@ -25,11 +25,12 @@ function getGLMClient(): OpenAI {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { personas, taskInfo, goals, sampleSize } = body as {
+    const { personas, taskInfo, goals, sampleSize, images } = body as {
       personas: Persona[];
       taskInfo: { taskName: string; description: string; goals: string[] };
       goals: string[];
       sampleSize: number;
+      images?: { data: string; name: string }[];
     };
 
     if (!Array.isArray(personas) || personas.length === 0) {
@@ -45,8 +46,8 @@ export async function POST(req: NextRequest) {
 
     const client = getGLMClient();
     const results: ReturnType<typeof parseUserEvalResponse>[] = [];
-    // 支持的模型列表（按优先级排序，第一个为主模型，其余为降级备选）
-    const MODEL_FALLBACKS = ["glm-5v-turbo", "glm-4v"];
+    // 使用视觉模型进行评测（需要识别设计稿截图）
+    const MODEL_FALLBACKS = ["glm-5v-turbo", "glm-4v", "glm-4-flash"];
 
     for (const persona of selected) {
       let evalSuccess = false;
@@ -57,14 +58,25 @@ export async function POST(req: NextRequest) {
             persona,
             taskInfo.description || taskInfo.taskName,
             goals || [],
-            0,
+            images?.length || 0,
           );
+
+          // 构造多模态内容：文字 + 图片
+          const content: any[] = [{ type: "text", text: prompt }];
+          if (images && images.length > 0) {
+            for (const img of images) {
+              content.push({
+                type: "image_url",
+                image_url: { url: img.data },
+              });
+            }
+          }
 
           const completion = await client.chat.completions.create({
             model,
-            messages: [{ role: "user", content: prompt }],
+            messages: [{ role: "user", content }],
             temperature: 0.4,
-            max_tokens: 2048,
+            max_tokens: 4096,
           });
 
           const rawText = completion.choices[0]?.message?.content || "";

@@ -16,12 +16,14 @@ export type { UserEvaluationSummary };
  * @param taskInfo 任务信息（从页面传入）
  * @param goals 关键目标列表
  * @param sampleSize 采样车主数量
+ * @param images 设计稿截图（base64 + 名称），用于AI评测
  * @returns UserEvaluationSummary（始终返回对象，通过 enabled/errorMessage 区分状态）
  */
 export async function runUserEvaluations(
   taskInfo: { taskName: string; description: string; goals: string[] },
   goals: string[],
   sampleSize: number,
+  images?: { data: string; name: string }[],
 ): Promise<UserEvaluationSummary> {
   // 从 localStorage 读取车主库数据传给服务端
   const rawPersonas = (() => {
@@ -56,6 +58,7 @@ export async function runUserEvaluations(
         taskInfo,
         goals,
         sampleSize,
+        images,
       }),
     });
 

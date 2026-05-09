@@ -9,6 +9,21 @@ import type { UserEvaluationSummary } from "@/lib/user-evaluation";
 import { getConsistencyLabel, getConsistencyColor, getScoreColor, getScoreRating } from "@/lib/user-evaluation";
 
 /* ============================================================
+   Dimension Code → Name 映射
+   ============================================================ */
+const DIMENSION_NAME_MAP: Record<string, string> = {
+  D1: "驾驶安全性", D2: "视觉可读性", D3: "信息架构",
+  D4: "交互效率",  D5: "一致性",     D6: "无障碍",
+  D7: "美观度",    D8: "功能完整性与状态感知",
+};
+function resolveDimensionName(raw: string): string {
+  return raw.split("/").map(code => {
+    const trimmed = code.trim();
+    return DIMENSION_NAME_MAP[trimmed] || trimmed;
+  }).join("/");
+}
+
+/* ============================================================
    Types
    ============================================================ */
 interface DimensionScore {
@@ -579,7 +594,7 @@ export default function ComparePage() {
                     <div key={issue.id} className="rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] transition-all overflow-hidden">
                       <div className="p-4">
                         <div className="flex items-center justify-between mb-2">
-                          <h4 className="text-sm font-semibold text-indigo-300">{issue.dimension}</h4>
+                          <h4 className="text-sm font-semibold text-indigo-300">{resolveDimensionName(issue.dimension)}</h4>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider shrink-0 border ${sevCfg.bg}`}>{sevCfg.label}</span>
                         </div>
                         <p className="text-[11px] text-slate-500 mb-2.5">{issue.category}</p>
@@ -619,7 +634,7 @@ export default function ComparePage() {
                     <div key={issue.id} className="rounded-xl border border-white/[0.06] bg-white/[0.02] hover:border-blue-500/15 transition-all overflow-hidden">
                       <div className="p-4">
                         <div className="flex items-center justify-between mb-2">
-                          <h4 className="text-sm font-semibold text-blue-300">{issue.dimension}</h4>
+                          <h4 className="text-sm font-semibold text-blue-300">{resolveDimensionName(issue.dimension)}</h4>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider shrink-0 border ${sevCfg.bg}`}>{sevCfg.label}</span>
                         </div>
                         <p className="text-[11px] text-slate-500 mb-2.5">{issue.category}</p>
@@ -774,7 +789,7 @@ export default function ComparePage() {
                           <div className="space-y-1">
                             <div className="flex items-center gap-1.5">
                               <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
-                              <span className="text-[11px] font-medium text-indigo-300/90">优点</span>
+                              <span className="text-[11px] font-medium text-indigo-300/90">建议</span>
                             </div>
                             <ul className="pl-4 space-y-0.5">
                               {allPos.slice(0, 3).map((s, i) => <li key={`pos-${i}`} className="text-[11px] text-slate-400 leading-relaxed">{s}</li>)}
@@ -789,7 +804,7 @@ export default function ComparePage() {
                           <div className="space-y-1">
                             <div className="flex items-center gap-1.5">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                              <span className="text-[11px] font-medium text-emerald-300/90">建议</span>
+                              <span className="text-[11px] font-medium text-emerald-300/90">缺点</span>
                             </div>
                             <ul className="pl-4 space-y-0.5">
                               {allPain.slice(0, 3).map((s, i) => <li key={`pain-${i}`} className="text-[11px] text-slate-400 leading-relaxed">{s}</li>)}

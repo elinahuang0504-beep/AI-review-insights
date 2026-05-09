@@ -102,7 +102,7 @@ function generateMockResult(): ReviewResult {
       { code: "D5", name: "一致性", score: 8.5, maxScore: 10, color: "#f59e0b" },
       { code: "D6", name: "无障碍", score: 7.2, maxScore: 10, color: "#ec4899" },
       { code: "D7", name: "美观度", score: 8.0, maxScore: 10, color: "#06b6d4" },
-      { code: "D8", name: "品牌感", score: 7.4, maxScore: 10, color: "#84cc16" },
+      { code: "D8", name: "功能完整性与状态感知", score: 7.4, maxScore: 10, color: "#84cc16" },
     ],
     issues: [
       {

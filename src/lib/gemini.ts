@@ -110,8 +110,8 @@ export const DIMENSIONS = [
     criteria: "WCAG合规、色盲友好、大字模式、语音辅助兼容、操作容错" },
   { code: "D7", name: "美观度", weight: "10%", color: "#06b6d4",
     criteria: "视觉层次、留白节奏、色彩和谐、图标质量、整体精致感" },
-  { code: "D8", name: "品牌感", weight: "5%", color: "#84cc16",
-    criteria: "品牌识别度、设计语言一致、情感传达、差异化程度" },
+  { code: "D8", name: "功能完整性与状态感知", weight: "5%", color: "#84cc16",
+    criteria: "状态闭环完整性、加载与等待状态、空状态设计、系统模式显式显示、多模态输出" },
 ];
 
 /* ============================================================
@@ -155,7 +155,7 @@ const FALLBACK_MODELS = ["glm-4v", "glm-4v-flash"]; // 降级视觉模型列表
 
 const REVIEW_SYSTEM_PROMPT =
   "HMI评审专家。标准:ISO15007,NHTSA≤2秒,WCAG2.1。" +
-  "8维:D1驾驶安全[20%],D2可读性[15%],D3信息架构[15%],D4交互效率[15%],D5一致性[10%],D6无障碍[10%],D7美观[10%],D8品牌[5%]。" +
+  "8维:D1驾驶安全[20%],D2可读性[15%],D3信息架构[15%],D4交互效率[15%],D5一致性[10%],D6无障碍[10%],D7美观[10%],D8功能完整性[5%]。" +
   "等级:Critical(安全),Serious(体验),Warning(优化),Info(建议)。" +
   "输出JSON:{overallScore:0-10,rating,summary,dimensions:[{code,score,reasoning}],issues:[{id,severity,dimension,description,suggestion}]}";
 
