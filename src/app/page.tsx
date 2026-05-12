@@ -360,6 +360,7 @@ function ReviewTab() {
   const [scene, setScene] = useState<"parked" | "driving">("driving");
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isReviewing, setIsReviewing] = useState(false);
+  const [reviewStep, setReviewStep] = useState<"review" | "userEval">("review");
 
   // ---- 用户评测状态 ----
   const [userEvalEnabled, setUserEvalEnabled] = useState(false);
@@ -457,6 +458,7 @@ function ReviewTab() {
       return;
     }
     setIsReviewing(true);
+    setReviewStep("review");
 
     try {
       // Convert images to base64 for API
@@ -468,13 +470,9 @@ function ReviewTab() {
         }))
       );
 
-      // Call AI review API (3分钟超时，大图片分析需要更长时间)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
-      // 读取虚拟车主库（用于用户评测）
-      const rawPersonas = (() => {
-        try { return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]"); } catch { return []; }
-      })();
+      // ===== 第1步：审查（视觉模型，独立请求）=====
+      const reviewController = new AbortController();
+      const reviewTimeoutId = setTimeout(() => reviewController.abort(), 180000);
       let response: Response;
       try {
         response = await fetch("/api/review", {
@@ -488,35 +486,73 @@ function ReviewTab() {
             systemType: "中控屏",
             scene: scene === "driving" ? "驾驶中使用" : "静止状态使用",
             evalMode: scene === "driving" ? "safety" : "standard",
-            // 用户评测：一次性传入，服务端使用同一份图片
-            userEval: userEvalEnabled && Array.isArray(rawPersonas) && rawPersonas.length > 0
-              ? { enabled: true, personas: rawPersonas, sampleSize: userEvalSampleSize }
-              : undefined,
           }),
-          signal: controller.signal,
+          signal: reviewController.signal,
         });
       } finally {
-        clearTimeout(timeoutId);
+        clearTimeout(reviewTimeoutId);
       }
 
       let reviewData;
-      
       if (!response.ok) {
-        // API failed - show real error to user
         const errorBody = await response.text().catch(() => "");
         console.error("API request failed:", response.status, errorBody);
         throw new Error(`服务器错误 (${response.status}): ${errorBody || response.statusText}`);
-      } else {
-        const json = await response.json();
-        if (json.success && json.data) {
-          // 新版格式：{ review, userEvalSummary }
-          reviewData = json.data.review || json.data;
-          // 提取用户评测结果（服务端已用同一份图片完成评测）
-          if (json.data.userEvalSummary) {
-            sessionStorage.setItem("userEvaluationSummary", JSON.stringify(json.data.userEvalSummary));
+      }
+      const reviewJson = await response.json();
+      if (!reviewJson.success || !reviewJson.data) {
+        throw new Error(reviewJson.error || "服务器返回数据格式异常");
+      }
+      reviewData = reviewJson.data.review || reviewJson.data;
+
+      // ===== 第2步：用户评测（可选，独立请求，使用文本快速模式）=====
+      if (userEvalEnabled) {
+        const rawPersonas = (() => {
+          try { return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]"); } catch { return []; }
+        })();
+        if (Array.isArray(rawPersonas) && rawPersonas.length > 0) {
+          setReviewStep("userEval");
+          try {
+            // 构建审查结果文本上下文（替代图片，大幅降低耗时）
+            const dimLines = reviewData.dimensions.map((d: any) =>
+              `- ${d.name}(${d.code}): ${d.score.toFixed(1)}/10 — ${d.reasoning || "无详细说明"}`
+            ).join("\n");
+            const topIssues = (reviewData.issues || []).slice(0, 5).map((i: any) =>
+              `[${i.severity}] ${i.dimension}: ${i.description?.slice(0, 80)}`
+            ).join("\n");
+            const reviewContext = `## 专家审查结果摘要\n总分: ${reviewData.overallScore.toFixed(1)}/10 (${reviewData.rating})\n总结: ${reviewData.summary}\n\n各维度评分:\n${dimLines}\n\n关键问题:\n${topIssues || "无严重问题"}\n\n待评测目标:\n${goals.filter(g => g.trim()).map((g, i) => `${i + 1}. ${g}`).join("\n")}`;
+
+            const evalController = new AbortController();
+            const evalTimeoutId = setTimeout(() => evalController.abort(), 120000);
+            let evalResponse: Response;
+            try {
+              evalResponse = await fetch("/api/user-eval", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  personas: rawPersonas,
+                  taskInfo: { taskName: description || "未命名审查任务", description, goals: goals.filter(g => g.trim()) },
+                  goals: goals.filter(g => g.trim()),
+                  sampleSize: userEvalSampleSize,
+                  reviewContext,
+                }),
+                signal: evalController.signal,
+              });
+            } finally {
+              clearTimeout(evalTimeoutId);
+            }
+
+            if (evalResponse.ok) {
+              const evalJson = await evalResponse.json();
+              if (evalJson.success && evalJson.data) {
+                sessionStorage.setItem("userEvaluationSummary", JSON.stringify(evalJson.data));
+              }
+            } else {
+              console.warn("[Review] 用户评测请求失败，仅展示审查结果");
+            }
+          } catch (evalErr) {
+            console.warn("[Review] 用户评测异常，仅展示审查结果:", evalErr);
           }
-        } else {
-          throw new Error(json.error || "服务器返回数据格式异常");
         }
       }
 
@@ -546,6 +582,7 @@ function ReviewTab() {
       }
     } finally {
       setIsReviewing(false);
+      setReviewStep("review");
     }
   };
 
@@ -732,7 +769,7 @@ function ReviewTab() {
                 {isReviewing ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>{userEvalEnabled ? "正在分析（专家审查 + 用户评测）..." : "正在深度分析..."}</span>
+                    <span>{reviewStep === "userEval" ? `正在用户评测（${userEvalSampleSize}人）...` : "正在深度分析..."}</span>
                   </>
                 ) : (
                   <>
@@ -767,6 +804,7 @@ function CompareTab() {
   const [goals, setGoals] = useState<string[]>([""]);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
+  const [compareStep, setCompareStep] = useState<"compare" | "userEval">("compare");
 
   // ---- 用户评测状态（对比模式） ----
   const [userEvalEnabled, setUserEvalEnabled] = useState(false);
@@ -861,18 +899,16 @@ function CompareTab() {
       return;
     }
     setIsComparing(true);
+    setCompareStep("compare");
 
     try {
       const v1Data = { data: await fileToBase64(imageA.file), name: imageA.file.name, state: imageA.stateDesc || "默认展示" };
       const v2Data = { data: await fileToBase64(imageB.file), name: imageB.file.name, state: imageB.stateDesc || "默认展示" };
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      // ===== 第1步：对比审查（视觉模型，独立请求）=====
+      const compareController = new AbortController();
+      const compareTimeoutId = setTimeout(() => compareController.abort(), 180000);
       let response: Response;
-      // 读取虚拟车主库（用于用户评测）
-      const comparePersonas = (() => {
-        try { return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]"); } catch { return []; }
-      })();
       try {
         response = await fetch("/api/compare", {
           method: "POST",
@@ -883,15 +919,11 @@ function CompareTab() {
             taskName: description || "未命名对比任务",
             description,
             goals: goals.filter(g => g.trim()),
-            // 用户评测：一次性传入，服务端使用同一份图片
-            userEval: userEvalEnabled && Array.isArray(comparePersonas) && comparePersonas.length > 0
-              ? { enabled: true, personas: comparePersonas, sampleSize: userEvalSampleSize }
-              : undefined,
           }),
-          signal: controller.signal,
+          signal: compareController.signal,
         });
       } finally {
-        clearTimeout(timeoutId);
+        clearTimeout(compareTimeoutId);
       }
 
       if (!response.ok) {
@@ -902,10 +934,61 @@ function CompareTab() {
       const json = await response.json();
       if (!json.success || !json.data) throw new Error(json.error || "服务器返回数据格式异常");
 
-      // 新版格式：{ compare, userEvalSummary }
       const compareResult = json.data.compare || json.data;
-      if (json.data.userEvalSummary) {
-        sessionStorage.setItem("userEvaluationSummary", JSON.stringify(json.data.userEvalSummary));
+
+      // ===== 第2步：用户评测（可选，独立请求，使用文本快速模式）=====
+      if (userEvalEnabled) {
+        const comparePersonas = (() => {
+          try { return JSON.parse(localStorage.getItem("virtualUserLibrary") || "[]"); } catch { return []; }
+        })();
+        if (Array.isArray(comparePersonas) && comparePersonas.length > 0) {
+          setCompareStep("userEval");
+          try {
+            // 用得分较高的版本构建评测上下文
+            const betterReview = compareResult.v2Review.overallScore >= compareResult.v1Review.overallScore
+              ? compareResult.v2Review : compareResult.v1Review;
+            const betterLabel = compareResult.v2Review.overallScore >= compareResult.v1Review.overallScore
+              ? "V2" : "V1";
+            const dimLines = betterReview.dimensions.map((d: any) =>
+              `- ${d.name}(${d.code}): ${d.score.toFixed(1)}/10 — ${d.reasoning || "无详细说明"}`
+            ).join("\n");
+            const topIssues = (betterReview.issues || []).slice(0, 3).map((i: any) =>
+              `[${i.severity}] ${i.dimension}: ${i.description?.slice(0, 80)}`
+            ).join("\n");
+            const reviewContext = `[${betterLabel}版本] 专家审查结果摘要\n总分: ${betterReview.overallScore.toFixed(1)}/10 (${betterReview.rating})\n总结: ${betterReview.summary}\n\n各维度评分:\n${dimLines}\n\n关键问题:\n${topIssues || "无严重问题"}\n\n待评测目标:\n${goals.filter(g => g.trim()).map((g, i) => `${i + 1}. ${g}`).join("\n")}`;
+
+            const evalController = new AbortController();
+            const evalTimeoutId = setTimeout(() => evalController.abort(), 120000);
+            let evalResponse: Response;
+            try {
+              evalResponse = await fetch("/api/user-eval", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  personas: comparePersonas,
+                  taskInfo: { taskName: description || "未命名对比任务", description, goals: goals.filter(g => g.trim()) },
+                  goals: goals.filter(g => g.trim()),
+                  sampleSize: userEvalSampleSize,
+                  reviewContext,
+                }),
+                signal: evalController.signal,
+              });
+            } finally {
+              clearTimeout(evalTimeoutId);
+            }
+
+            if (evalResponse.ok) {
+              const evalJson = await evalResponse.json();
+              if (evalJson.success && evalJson.data) {
+                sessionStorage.setItem("userEvaluationSummary", JSON.stringify(evalJson.data));
+              }
+            } else {
+              console.warn("[Compare] 用户评测请求失败，仅展示对比结果");
+            }
+          } catch (evalErr) {
+            console.warn("[Compare] 用户评测异常，仅展示对比结果:", evalErr);
+          }
+        }
       }
 
       // 存储到sessionStorage供对比报告页使用
@@ -932,6 +1015,7 @@ function CompareTab() {
       }
     } finally {
       setIsComparing(false);
+      setCompareStep("compare");
     }
   };
 
@@ -1122,7 +1206,7 @@ function CompareTab() {
                 {isComparing ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>{userEvalEnabled ? "正在分析（专家对比 + 用户评测）..." : "正在深度对比..."}</span>
+                    <span>{compareStep === "userEval" ? `正在用户评测（${userEvalSampleSize}人）...` : "正在深度对比..."}</span>
                   </>
                 ) : (
                   <>

@@ -454,6 +454,8 @@ function cleanJsonResponse(text: string): string {
  * - Unquoted property names
  * - Single quotes instead of double quotes
  * - Comments (// or /*)
+ * - Backtick strings
+ * - undefined values
  */
 function attemptFixMalformedJson(jsonStr: string): string {
   let fixed = jsonStr;
@@ -470,6 +472,16 @@ function attemptFixMalformedJson(jsonStr: string): string {
   // Remove trailing commas before } or ]
   fixed = fixed.replace(/,\s*([}\]])/g, '$1');
 
+  // Quote unquoted property names: {foo: "bar"} → {"foo": "bar"}
+  // Match word characters followed by colon, not already quoted
+  fixed = fixed.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":');
+
+  // Replace backtick strings with double quotes
+  fixed = fixed.replace(/`([^`]*?)`/g, '"$1"');
+
+  // Replace undefined with null
+  fixed = fixed.replace(/\bundefined\b/g, 'null');
+
   return fixed;
 }
 
@@ -481,16 +493,38 @@ function safeParseJson(text: string, fallbackLabel: string = "result"): any {
   const cleaned = cleanJsonResponse(text);
   try {
     return JSON.parse(cleaned);
-  } catch {}
-
-  // Strategy 2: Fix common JSON issues and retry
-  try {
-    return JSON.parse(attemptFixMalformedJson(cleaned));
-  } catch {}
-
-  // Strategy 3: Log raw content for debugging and throw meaningful error
-  console.error(`[${fallbackLabel}] Failed to parse JSON. Raw preview (first 300 chars):`, text.slice(0, 300));
-  throw new Error(`Expected double-quoted property name in JSON at position 51`);
+  } catch (e1) {
+    // Strategy 2: Fix common JSON issues and retry
+    try {
+      const fixed = attemptFixMalformedJson(cleaned);
+      return JSON.parse(fixed);
+    } catch (e2) {
+      // Strategy 3: More aggressive fix - quote unquoted names on the original cleaned text
+      try {
+        let aggressive = cleaned;
+        // Remove all comments first
+        aggressive = aggressive.replace(/\/\/[^\n]*/g, '');
+        aggressive = aggressive.replace(/\/\*[\s\S]*?\*\//g, '');
+        // Replace single quotes
+        aggressive = aggressive.replace(/'/g, '"');
+        // Remove trailing commas
+        aggressive = aggressive.replace(/,\s*([}\]])/g, '$1');
+        // Quote unquoted property names
+        aggressive = aggressive.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":');
+        // Replace backtick strings
+        aggressive = aggressive.replace(/`([^`]*?)`/g, '"$1"');
+        // Replace undefined
+        aggressive = aggressive.replace(/\bundefined\b/g, 'null');
+        return JSON.parse(aggressive);
+      } catch (e3) {
+        // Strategy 4: Log and return empty object instead of throwing
+        const parseError = e1 instanceof Error ? e1.message : String(e1);
+        console.error(`[${fallbackLabel}] Failed to parse JSON after all repair attempts. Error: ${parseError}`);
+        console.error(`[${fallbackLabel}] Raw preview (first 500 chars):`, text.slice(0, 500));
+        return {};
+      }
+    }
+  }
 }
 
 /* ============================================================
